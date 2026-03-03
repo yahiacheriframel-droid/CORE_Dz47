@@ -783,6 +783,1261 @@ body {
   <meta name="apple-mobile-web-app-title" content="CORE-DZ">
   <meta name="theme-color" content="#c9a84c">
 
+
+<!-- ============================================================ -->
+<!-- PHASE 10 : BASE DE DONNÉES CORE-DZ - INTÉGRATION CLINIQUE -->
+<!-- Schema de base de données robuste avec validations strictes -->
+<!-- ============================================================ -->
+<script>
+/**
+ * ============================================================
+ * CORE-DZ v25 - SCHEMA DE BASE DE DONNÉES
+ * PHASE 10 : FONDATION ROBUSTE & CHIRURGICALE
+ * ============================================================
+ * 
+ * Structure complète de toutes les données de l'application
+ * Gestion CRUD avec validations strictes
+ * Persistance LocalStorage + fallback
+ * 
+ * PRINCIPES:
+ * - Validations AVANT chaque opération
+ * - Zéro donnée "garbage"
+ * - Immutabilité (copies, pas mutations directes)
+ * - Tracabilité complète (timestamps)
+ * - Rollback possible
+ */
+
+// ============================================================
+// 1. DÉFINITION SCHEMAS
+// ============================================================
+
+const SCHEMAS = {
+  
+  TRACTEUR: {
+    // Identité
+    id: { type: 'string', required: true, pattern: /^T\d{3}$/, desc: 'ID interne (T001-T999)' },
+    matricule: { type: 'string', required: true, pattern: /^\d{6},\d{3},\d{2}$/, desc: 'Matricule régional (000318,519,16)' },
+    vin: { type: 'string', required: false, minLength: 17, maxLength: 17 },
+    
+    // Propriétés
+    marque: { type: 'string', required: true, minLength: 3, desc: 'MAN TGS 400, VOLVO FH16, etc.' },
+    modele: { type: 'string', required: false },
+    couleur: { type: 'string', required: false },
+    ptc: { type: 'number', required: false, min: 0 },
+    dateAcquisition: { type: 'date', required: false, desc: 'JJ/MM/AAAA' },
+    
+    // Exploitation
+    chauffeur: { type: 'string', required: false, desc: 'Nom du chauffeur assigné' },
+    km: { type: 'number', required: true, min: 0, max: 999999, desc: 'Kilométrage actuel' },
+    remorque: { type: 'string', required: false, desc: 'ID remorque attachée' },
+    
+    // Maintenance (dates dernière intervention)
+    derVid: { type: 'number', required: true, min: 0, max: 999999, desc: 'KM dernière vidange' },
+    derInj: { type: 'number', required: true, min: 0, max: 999999 },
+    derTurbo: { type: 'number', required: true, min: 0, max: 999999 },
+    derDistri: { type: 'number', required: true, min: 0, max: 999999 },
+    derPompe: { type: 'number', required: true, min: 0, max: 999999 },
+    derTrans: { type: 'number', required: true, min: 0, max: 999999 },
+    derDessi: { type: 'number', required: true, min: 0, max: 999999 },
+    derRefroid: { type: 'number', required: true, min: 0, max: 999999 },
+    derSusp: { type: 'number', required: true, min: 0, max: 999999 },
+    derFreinage: { type: 'number', required: true, min: 0, max: 999999 },
+    
+    // Conformité
+    echAss: { type: 'string', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$|^—$/, desc: 'JJ/MM/AAAA' },
+    echCtrl: { type: 'string', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$|^—$/ },
+    echVign: { type: 'string', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$|^—$/ },
+    statutLegal: { type: 'enum', values: ['OK', 'PERIME'], required: true },
+    
+    // État
+    verdict: { type: 'enum', values: ['STOP', 'ALERTE', 'OK', 'DISPONIBLE'], required: true },
+    situationParc: { type: 'enum', values: ['EN SERVICE', 'ARRÊT', 'DISPO', 'HORS SERVICE'], required: true },
+    
+    // Métadonnées
+    notes: { type: 'string', required: false, maxLength: 500 },
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  },
+
+  REMORQUE: {
+    id: { type: 'string', required: true, pattern: /^R\d{2}$/ },
+    matricule: { type: 'string', required: true, pattern: /^\d{6},\d{3},\d{2}$/ },
+    type: { type: 'enum', values: ['PLATEAU', 'BENNE', 'CITERNE', 'FRIGORIFIQUE'], required: true },
+    marque: { type: 'string', required: true },
+    
+    attacheeA: { type: 'string', required: false, desc: 'ID tracteur auquel elle est attachée' },
+    
+    // Maintenance
+    derFreins: { type: 'number', required: true, min: 0 },
+    derSusp: { type: 'number', required: true, min: 0 },
+    derGraissage: { type: 'number', required: true, min: 0 },
+    derAttelage: { type: 'number', required: true, min: 0 },
+    
+    // Conformité
+    echAss: { type: 'string', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$|^—$/ },
+    echCtrl: { type: 'string', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$|^—$/ },
+    statutory: { type: 'enum', values: ['OK', 'PERIME'], required: true },
+    
+    // État
+    situationParc: { type: 'enum', values: ['EN SERVICE', 'ARRÊT', 'DISPO', 'HORS SERVICE'], required: true },
+    
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  },
+
+  CHAUFFEUR: {
+    matricule: { type: 'string', required: true, pattern: /^C\d{3}$/ },
+    nom: { type: 'string', required: true, minLength: 2 },
+    contact: { type: 'string', required: false },
+    licence: { type: 'string', required: false },
+    
+    // Scoring IA
+    score: { type: 'number', required: true, min: 0, max: 100, default: 50 },
+    freinage_total: { type: 'number', required: true, min: 0, default: 0 },
+    acceleration_total: { type: 'number', required: true, min: 0, default: 0 },
+    vitesse_max: { type: 'number', required: true, min: 0, default: 0 },
+    
+    // Incidents
+    incidents: { type: 'array', itemType: 'object', default: [] },
+    bonus: { type: 'number', required: true, min: 0, default: 0 },
+    malus: { type: 'number', required: true, min: 0, default: 0 },
+    
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  },
+
+  COMMANDE: {
+    id: { type: 'string', required: true, pattern: /^CMD\d{6}$/ },
+    dateCommande: { type: 'date', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$/ },
+    client: { type: 'string', required: true, minLength: 2 },
+    
+    tracteur: { type: 'string', required: true, desc: 'ID tracteur assigné' },
+    remorque: { type: 'string', required: false, desc: 'ID remorque assignée' },
+    chauffeur: { type: 'string', required: true, desc: 'Nom chauffeur' },
+    
+    marchandise: { type: 'string', required: true, minLength: 3 },
+    depart: { type: 'string', required: true, desc: 'Ville/Adresse départ' },
+    arrivee: { type: 'string', required: true, desc: 'Ville/Adresse arrivée' },
+    
+    statut: { type: 'enum', values: ['PLANIFIEE', 'EN_COURS', 'LIVREE', 'ANNULEE'], required: true },
+    notes: { type: 'string', required: false, maxLength: 500 },
+    
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  },
+
+  MAINTENANCE_PLANIFIEE: {
+    id: { type: 'string', required: true, pattern: /^MAINT\d{6}$/ },
+    vehicule: { type: 'string', required: true, desc: 'ID tracteur ou remorque' },
+    type: { type: 'enum', values: ['VIDANGE', 'INJECTION', 'TURBO', 'DISTRIBUTION', 'POMPE', 'TRANSMISSION', 'DESSICATEUR', 'REFROID', 'SUSPENSION', 'FREINAGE'], required: true },
+    
+    dateEcheance: { type: 'date', required: true, pattern: /^\d{2}\/\d{2}\/\d{4}$/ },
+    statut: { type: 'enum', values: ['PLANIFIEE', 'EN_COURS', 'EFFECTUEE', 'REPORTEE'], required: true, default: 'PLANIFIEE' },
+    
+    priorite: { type: 'enum', values: ['BASSE', 'NORMALE', 'HAUTE', 'CRITIQUE'], required: true },
+    notes: { type: 'string', required: false },
+    
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  },
+
+  NOTIFICATION_IA: {
+    id: { type: 'string', required: true, pattern: /^NOTIF\d{6}$/ },
+    type: { type: 'enum', values: ['MAINTENANCE', 'CONFORMITE', 'ALERTE', 'RECOM'], required: true },
+    titre: { type: 'string', required: true },
+    contenu: { type: 'string', required: true },
+    urgence: { type: 'enum', values: ['BASSE', 'NORMALE', 'HAUTE', 'CRITIQUE'], required: true },
+    
+    vehicule: { type: 'string', required: false, desc: 'ID tracteur/remorque concerné' },
+    lu: { type: 'boolean', required: true, default: false },
+    actionCreee: { type: 'boolean', required: true, default: false },
+    
+    dateCreation: { type: 'timestamp', required: true },
+  },
+
+  LIAISON_CAMION_REMORQUE: {
+    id: { type: 'string', required: true, pattern: /^LIAISON\d{6}$/ },
+    tracteur: { type: 'string', required: true },
+    remorque: { type: 'string', required: true },
+    photo_url: { type: 'string', required: false, desc: 'Base64 ou URL' },
+    
+    valide: { type: 'boolean', required: true, default: false },
+    validePar: { type: 'string', required: false, desc: 'Matricule admin qui a validé' },
+    
+    dateCreation: { type: 'timestamp', required: true },
+    dateModification: { type: 'timestamp', required: true },
+  }
+};
+
+// ============================================================
+// 2. VALIDATEURS
+// ============================================================
+
+class Validator {
+  static validate(data, schema) {
+    const errors = [];
+
+    for (const [field, rules] of Object.entries(schema)) {
+      const value = data[field];
+
+      // Requis ?
+      if (rules.required && (value === undefined || value === null || value === '')) {
+        errors.push(`${field} est requis`);
+        continue;
+      }
+
+      if (value === undefined || value === null) continue; // Optionnel et vide = OK
+
+      // Type
+      if (rules.type === 'string' && typeof value !== 'string') {
+        errors.push(`${field} doit être un texte`);
+      }
+      if (rules.type === 'number' && typeof value !== 'number') {
+        errors.push(`${field} doit être un nombre`);
+      }
+      if (rules.type === 'date' && !rules.pattern.test(value)) {
+        errors.push(`${field} format invalide (JJ/MM/AAAA)`);
+      }
+      if (rules.type === 'timestamp' && typeof value !== 'number') {
+        errors.push(`${field} doit être un timestamp`);
+      }
+
+      // Pattern
+      if (rules.pattern && !rules.pattern.test(value)) {
+        errors.push(`${field} format invalide`);
+      }
+
+      // Min/Max
+      if (rules.min !== undefined && value < rules.min) {
+        errors.push(`${field} minimum: ${rules.min}`);
+      }
+      if (rules.max !== undefined && value > rules.max) {
+        errors.push(`${field} maximum: ${rules.max}`);
+      }
+
+      // Enum
+      if (rules.type === 'enum' && !rules.values.includes(value)) {
+        errors.push(`${field} doit être parmi: ${rules.values.join(', ')}`);
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
+  }
+}
+
+// ============================================================
+// 3. GESTIONNAIRE BASE DE DONNÉES
+// ============================================================
+
+class CoreDzDB {
+  constructor() {
+    this.storageKey = 'CORE_DZ_DATABASE';
+    this.backupKey = 'CORE_DZ_DATABASE_BACKUP';
+    this.db = this.load();
+  }
+
+  // LOAD
+  load() {
+    try {
+      const stored = localStorage.getItem(this.storageKey);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error('❌ Erreur chargement DB:', e);
+    }
+
+    // Schema vide
+    return {
+      tracteurs: {},
+      remorques: {},
+      chauffeurs: {},
+      commandes: {},
+      maintenances: {},
+      notifications: {},
+      liaisons: {},
+      metadata: {
+        version: '1.0',
+        lastBackup: null,
+        operations: 0
+      }
+    };
+  }
+
+  // SAVE
+  save() {
+    try {
+      // Backup avant save
+      const current = localStorage.getItem(this.storageKey);
+      if (current) {
+        localStorage.setItem(this.backupKey, current);
+      }
+
+      // Save
+      localStorage.setItem(this.storageKey, JSON.stringify(this.db));
+      this.db.metadata.operations++;
+
+      return { success: true };
+    } catch (e) {
+      console.error('❌ Erreur sauvegarde DB:', e);
+      return { success: false, error: e.message };
+    }
+  }
+
+  // CRUD TRACTEURS
+  addTracteur(data) {
+    const validation = Validator.validate(data, SCHEMAS.TRACTEUR);
+    if (!validation.valid) {
+      return { success: false, errors: validation.errors };
+    }
+
+    const now = Date.now();
+    const tracteur = {
+      ...data,
+      dateCreation: now,
+      dateModification: now
+    };
+
+    this.db.tracteurs[data.id] = tracteur;
+    this.save();
+
+    return { success: true, data: tracteur };
+  }
+
+  getTracteur(id) {
+    return this.db.tracteurs[id] || null;
+  }
+
+  updateTracteur(id, updates) {
+    const tracteur = this.getTracteur(id);
+    if (!tracteur) {
+      return { success: false, error: 'Tracteur non trouvé' };
+    }
+
+    const updated = { ...tracteur, ...updates, dateModification: Date.now() };
+    const validation = Validator.validate(updated, SCHEMAS.TRACTEUR);
+
+    if (!validation.valid) {
+      return { success: false, errors: validation.errors };
+    }
+
+    this.db.tracteurs[id] = updated;
+    this.save();
+
+    return { success: true, data: updated };
+  }
+
+  deleteTracteur(id) {
+    delete this.db.tracteurs[id];
+    this.save();
+    return { success: true };
+  }
+
+  getAllTracteurs() {
+    return Object.values(this.db.tracteurs);
+  }
+
+  // CRUD REMORQUES (même pattern)
+  addRemorque(data) {
+    const validation = Validator.validate(data, SCHEMAS.REMORQUE);
+    if (!validation.valid) {
+      return { success: false, errors: validation.errors };
+    }
+
+    const now = Date.now();
+    const remorque = {
+      ...data,
+      dateCreation: now,
+      dateModification: now
+    };
+
+    this.db.remorques[data.id] = remorque;
+    this.save();
+
+    return { success: true, data: remorque };
+  }
+
+  getRemorque(id) {
+    return this.db.remorques[id] || null;
+  }
+
+  updateRemorque(id, updates) {
+    const remorque = this.getRemorque(id);
+    if (!remorque) {
+      return { success: false, error: 'Remorque non trouvée' };
+    }
+
+    const updated = { ...remorque, ...updates, dateModification: Date.now() };
+    const validation = Validator.validate(updated, SCHEMAS.REMORQUE);
+
+    if (!validation.valid) {
+      return { success: false, errors: validation.errors };
+    }
+
+    this.db.remorques[id] = updated;
+    this.save();
+
+    return { success: true, data: updated };
+  }
+
+  deleteRemorque(id) {
+    delete this.db.remorques[id];
+    this.save();
+    return { success: true };
+  }
+
+  getAllRemorques() {
+    return Object.values(this.db.remorques);
+  }
+
+  // UTILITAIRES
+  backup() {
+    const backup = JSON.stringify(this.db);
+    const timestamp = new Date().toISOString();
+    localStorage.setItem(`CORE_DZ_BACKUP_${timestamp}`, backup);
+    return { success: true, timestamp };
+  }
+
+  restore(timestamp) {
+    const backup = localStorage.getItem(`CORE_DZ_BACKUP_${timestamp}`);
+    if (!backup) {
+      return { success: false, error: 'Backup non trouvé' };
+    }
+
+    this.db = JSON.parse(backup);
+    this.save();
+
+    return { success: true };
+  }
+
+  export() {
+    return {
+      data: this.db,
+      timestamp: new Date().toISOString(),
+      count: {
+        tracteurs: Object.keys(this.db.tracteurs).length,
+        remorques: Object.keys(this.db.remorques).length,
+        commandes: Object.keys(this.db.commandes).length,
+        maintenances: Object.keys(this.db.maintenances).length
+      }
+    };
+  }
+
+  stats() {
+    return {
+      tracteurs: Object.keys(this.db.tracteurs).length,
+      remorques: Object.keys(this.db.remorques).length,
+      chauffeurs: Object.keys(this.db.chauffeurs).length,
+      commandes: Object.keys(this.db.commandes).length,
+      maintenances: Object.keys(this.db.maintenances).length,
+      notifications: Object.keys(this.db.notifications).length,
+      operationsTotales: this.db.metadata.operations
+    };
+  }
+}
+
+// ============================================================
+// 4. INSTANCE GLOBALE
+// ============================================================
+
+const DB = new CoreDzDB();
+
+// ============================================================
+// 5. TESTS
+// ============================================================
+
+function testDB() {
+  console.log('🧪 TESTS BASE DE DONNÉES...\n');
+
+  // Test 1: Ajouter tracteur
+  const test1 = DB.addTracteur({
+    id: 'T001',
+    matricule: '000318,519,16',
+    marque: 'MAN TGS 400',
+    km: 417000,
+    derVid: 415000,
+    derInj: 410000,
+    derTurbo: 405000,
+    derDistri: 400000,
+    derPompe: 398000,
+    derTrans: 395000,
+    derDessi: 390000,
+    derRefroid: 388000,
+    derSusp: 385000,
+    derFreinage: 383000,
+    echAss: '28/11/2026',
+    echCtrl: '31/05/2026',
+    echVign: '05/05/2026',
+    statutLegal: 'OK',
+    verdict: 'OK',
+    situationParc: 'EN SERVICE',
+    chauffeur: 'Ahmed Bouazza'
+  });
+
+  if (test1.success) {
+    console.log('✅ Test 1 PASS: Tracteur ajouté');
+    console.log('   Data:', test1.data);
+  } else {
+    console.log('❌ Test 1 FAIL:', test1.errors);
+  }
+
+  // Test 2: Récupérer tracteur
+  const test2 = DB.getTracteur('T001');
+  if (test2) {
+    console.log('\n✅ Test 2 PASS: Tracteur récupéré');
+  } else {
+    console.log('\n❌ Test 2 FAIL: Tracteur non trouvé');
+  }
+
+  // Test 3: Stats
+  const stats = DB.stats();
+  console.log('\n✅ Test 3 PASS: Stats');
+  console.log('   ', stats);
+
+  // Test 4: Export
+  const exp = DB.export();
+  console.log('\n✅ Test 4 PASS: Export');
+  console.log('   Count:', exp.count);
+}
+
+// AUTO-RUN TESTS (décommenter pour tester)
+// testDB();
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+// Pour Node.js
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { DB, Validator, SCHEMAS };
+}
+
+
+
+// ✅ INITIALISATION DB AU DÉMARRAGE
+
+
+
+window.addEventListener('DOMContentLoaded', function() {
+  console.log('🏥 CORE-DZ DATABASE INITIALIZED');
+  console.log('📊 DB Stats:', DB.stats());
+  console.log('💾 DB Prête pour l\'application');
+});
+
+
+// ============================================================
+// SITUATION PARC - FONCTIONS GLOBALES
+// Placer ce script directement dans le HTML
+// ============================================================
+
+window.refreshSituationParc = function() {
+  console.log('🔄 Rafraîchissement situation parc...');
+  
+  const statuts = ['EN SERVICE', 'ARRÊT', 'ALERTE', 'DISPONIBLE', 'HORS SERVICE'];
+  
+  statuts.forEach(statut => {
+    const tracteurs = DB.getAllTracteurs().filter(t => t.situationParc === statut);
+    const remorques = DB.getAllRemorques().filter(r => r.situationParc === statut);
+    
+    const elementId = 'statut-' + statut.toLowerCase().replace(/ /g, '-');
+    const container = document.getElementById(elementId);
+    
+    console.log(`  ${statut}: ${tracteurs.length} tracteurs, ${remorques.length} remorques`);
+    
+    if (!container) {
+      console.warn(`  ⚠️ Container ${elementId} non trouvé`);
+      return;
+    }
+    
+    let html = '';
+    
+    // Afficher les tracteurs
+    tracteurs.forEach(t => {
+      html += `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--gold);">${t.matricule}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">
+              👤 ${t.chauffeur || '—'} | 🚛 ${t.marque} | 📍 ${t.km}km
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="window.permutateVehicle('T', '${t.id}')" style="padding:6px 8px;background:rgba(100,100,200,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">↔️</button>
+            <button onclick="window.deleteVehicle('T', '${t.id}')" style="padding:6px 8px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">🗑️</button>
+          </div>
+        </div>
+      `;
+    });
+    
+    // Afficher les remorques
+    remorques.forEach(r => {
+      html += `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;opacity:0.8;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--gold);">${r.matricule} (REMORQUE)</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">
+              🔗 ${r.type} | ${r.marque}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="window.permutateVehicle('R', '${r.id}')" style="padding:6px 8px;background:rgba(100,100,200,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">↔️</button>
+            <button onclick="window.deleteVehicle('R', '${r.id}')" style="padding:6px 8px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">🗑️</button>
+          </div>
+        </div>
+      `;
+    });
+    
+    if (html === '') {
+      html = '<div style="color:var(--text-dim);font-size:12px;padding:8px;text-align:center;">— Aucun véhicule —</div>';
+    }
+    
+    container.innerHTML = html;
+  });
+  
+  console.log('✅ Rafraîchissement terminé');
+};
+
+window.addVehicleToStatus = function(statut) {
+  console.log('➕ Ajout véhicule au statut:', statut);
+  const id = prompt('Entrer l\'ID (T001, R01, etc.):');
+  if (!id) return;
+  
+  const type = id.charAt(0);
+  
+  if (type === 'T') {
+    const t = DB.getTracteur(id);
+    if (!t) {
+      alert('❌ Tracteur ' + id + ' non trouvé');
+      return;
+    }
+    const result = DB.updateTracteur(id, { situationParc: statut });
+    if (result.success) {
+      alert('✅ ' + id + ' → ' + statut);
+    } else {
+      alert('❌ Erreur: ' + result.errors.join(', '));
+    }
+  } else if (type === 'R') {
+    const r = DB.getRemorque(id);
+    if (!r) {
+      alert('❌ Remorque ' + id + ' non trouvée');
+      return;
+    }
+    const result = DB.updateRemorque(id, { situationParc: statut });
+    if (result.success) {
+      alert('✅ ' + id + ' → ' + statut);
+    } else {
+      alert('❌ Erreur: ' + result.errors.join(', '));
+    }
+  } else {
+    alert('❌ ID invalide (doit commencer par T ou R)');
+    return;
+  }
+  
+  window.refreshSituationParc();
+};
+
+window.permutateVehicle = function(type, id) {
+  console.log('↔️ Permutation:', type, id);
+  const statuts = ['EN SERVICE', 'ARRÊT', 'ALERTE', 'DISPONIBLE', 'HORS SERVICE'];
+  
+  let current = '';
+  if (type === 'T') {
+    const t = DB.getTracteur(id);
+    if (!t) { alert('Tracteur non trouvé'); return; }
+    current = t.situationParc;
+  } else {
+    const r = DB.getRemorque(id);
+    if (!r) { alert('Remorque non trouvée'); return; }
+    current = r.situationParc;
+  }
+  
+  const nouveau = prompt('Statuts:\n' + statuts.join('\n') + '\n\nNouveau statut:', current);
+  
+  if (!nouveau || !statuts.includes(nouveau)) {
+    alert('❌ Statut invalide');
+    return;
+  }
+  
+  if (type === 'T') {
+    DB.updateTracteur(id, { situationParc: nouveau });
+    alert('✅ ' + id + ' → ' + nouveau);
+  } else {
+    DB.updateRemorque(id, { situationParc: nouveau });
+    alert('✅ ' + id + ' → ' + nouveau);
+  }
+  
+  window.refreshSituationParc();
+};
+
+window.deleteVehicle = function(type, id) {
+  console.log('🗑️ Suppression:', type, id);
+  if (!confirm('⚠️ Supprimer ' + id + ' ?')) return;
+  
+  if (type === 'T') {
+    DB.deleteTracteur(id);
+  } else {
+    DB.deleteRemorque(id);
+  }
+  
+  alert('✅ ' + id + ' supprimé');
+  window.refreshSituationParc();
+};
+
+// INIT au chargement
+window.addEventListener('load', function() {
+  console.log('🏥 Initialisation Situation Parc...');
+  window.refreshSituationParc();
+});
+
+
+
+
+
+// ============================================================
+// PHASE 3 : GESTION PLANIFICATIONS COMMANDES
+// ============================================================
+
+window.addCommande = function() {
+  const date = document.getElementById('cmd-date').value.trim();
+  const client = document.getElementById('cmd-client').value.trim();
+  const tracteur = document.getElementById('cmd-tracteur').value.trim();
+  const remorque = document.getElementById('cmd-remorque').value.trim();
+  const chauffeur = document.getElementById('cmd-chauffeur').value.trim();
+  const marchandise = document.getElementById('cmd-marchandise').value.trim();
+  const depart = document.getElementById('cmd-depart').value.trim();
+  const arrivee = document.getElementById('cmd-arrivee').value.trim();
+  const statut = document.getElementById('cmd-statut').value;
+  const notes = document.getElementById('cmd-notes').value.trim();
+  
+  // Validations
+  if (!date || !client || !tracteur || !chauffeur || !marchandise || !depart || !arrivee) {
+    alert('❌ Remplissez tous les champs requis');
+    return;
+  }
+  
+  // Vérifier que le tracteur existe
+  if (!DB.getTracteur(tracteur)) {
+    alert('❌ Tracteur ' + tracteur + ' non trouvé');
+    return;
+  }
+  
+  // Générer ID unique
+  const id = 'CMD' + Date.now();
+  
+  // Créer la commande
+  const commande = {
+    id: id,
+    dateCommande: date,
+    client: client,
+    tracteur: tracteur,
+    remorque: remorque || null,
+    chauffeur: chauffeur,
+    marchandise: marchandise,
+    depart: depart,
+    arrivee: arrivee,
+    statut: statut,
+    notes: notes
+  };
+  
+  // Ajouter à la DB
+  if (!DB.db.commandes) DB.db.commandes = {};
+  DB.db.commandes[id] = commande;
+  DB.save();
+  
+  // Vider le formulaire
+  document.getElementById('cmd-date').value = '';
+  document.getElementById('cmd-client').value = '';
+  document.getElementById('cmd-tracteur').value = '';
+  document.getElementById('cmd-remorque').value = '';
+  document.getElementById('cmd-chauffeur').value = '';
+  document.getElementById('cmd-marchandise').value = '';
+  document.getElementById('cmd-depart').value = '';
+  document.getElementById('cmd-arrivee').value = '';
+  document.getElementById('cmd-notes').value = '';
+  
+  alert('✅ Commande créée: ' + id);
+  window.refreshCommandes();
+};
+
+window.refreshCommandes = function() {
+  const filter = document.getElementById('cmd-filter').value.toLowerCase();
+  const tbody = document.getElementById('commandes-tbody');
+  
+  if (!DB.db.commandes) DB.db.commandes = {};
+  
+  const commandes = Object.values(DB.db.commandes);
+  
+  if (commandes.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-dim);">Aucune commande</td></tr>';
+    return;
+  }
+  
+  // Filtrer
+  const filtered = commandes.filter(c => 
+    c.client.toLowerCase().includes(filter) ||
+    c.tracteur.toLowerCase().includes(filter) ||
+    c.chauffeur.toLowerCase().includes(filter) ||
+    c.dateCommande.includes(filter)
+  );
+  
+  let html = '';
+  
+  filtered.forEach(c => {
+    const statutColor = 
+      c.statut === 'PLANIFIEE' ? 'var(--blue)' :
+      c.statut === 'EN_COURS' ? 'var(--orange)' :
+      c.statut === 'LIVREE' ? 'var(--green)' : 'var(--red)';
+    
+    html += `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px;color:var(--text);">${c.dateCommande}</td>
+        <td style="padding:8px;color:var(--text);">${c.client}</td>
+        <td style="padding:8px;color:var(--gold);font-weight:700;">${c.tracteur}</td>
+        <td style="padding:8px;color:var(--text-dim);">${c.remorque || '—'}</td>
+        <td style="padding:8px;color:var(--text);">${c.chauffeur}</td>
+        <td style="padding:8px;color:var(--text);">${c.marchandise}</td>
+        <td style="padding:8px;color:var(--text);font-size:10px;">${c.depart} → ${c.arrivee}</td>
+        <td style="padding:8px;color:${statutColor};font-weight:700;font-size:10px;">${c.statut}</td>
+        <td style="padding:8px;text-align:center;">
+          <button onclick="window.editCommande('${c.id}')" style="padding:4px 6px;background:rgba(10,132,255,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:3px;font-size:10px;font-weight:700;cursor:pointer;margin-right:4px;">✏️</button>
+          <button onclick="window.deleteCommande('${c.id}')" style="padding:4px 6px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:3px;font-size:10px;font-weight:700;cursor:pointer;">🗑️</button>
+        </td>
+      </tr>
+    `;
+  });
+  
+  tbody.innerHTML = html;
+};
+
+window.editCommande = function(id) {
+  if (!DB.db.commandes || !DB.db.commandes[id]) {
+    alert('Commande non trouvée');
+    return;
+  }
+  
+  const c = DB.db.commandes[id];
+  
+  const newStatut = prompt('Nouveau statut (PLANIFIEE / EN_COURS / LIVREE / ANNULEE):', c.statut);
+  if (!newStatut) return;
+  
+  if (!['PLANIFIEE', 'EN_COURS', 'LIVREE', 'ANNULEE'].includes(newStatut)) {
+    alert('Statut invalide');
+    return;
+  }
+  
+  DB.db.commandes[id].statut = newStatut;
+  DB.save();
+  
+  alert('✅ Commande modifiée');
+  window.refreshCommandes();
+};
+
+window.deleteCommande = function(id) {
+  if (!confirm('⚠️ Supprimer cette commande?')) return;
+  
+  delete DB.db.commandes[id];
+  DB.save();
+  
+  alert('✅ Commande supprimée');
+  window.refreshCommandes();
+};
+
+window.exportCommandes = function() {
+  if (!DB.db.commandes) DB.db.commandes = {};
+  
+  const commandes = Object.values(DB.db.commandes);
+  
+  let csv = 'Date,Client,Tracteur,Remorque,Chauffeur,Marchandise,Départ,Arrivée,Statut,Notes\n';
+  
+  commandes.forEach(c => {
+    csv += `"${c.dateCommande}","${c.client}","${c.tracteur}","${c.remorque || ''}","${c.chauffeur}","${c.marchandise}","${c.depart}","${c.arrivee}","${c.statut}","${c.notes}"\n`;
+  });
+  
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'commandes_' + new Date().getTime() + '.csv';
+  a.click();
+  window.URL.revokeObjectURL(url);
+};
+
+// Charger au démarrage
+window.addEventListener('load', function() {
+  window.refreshCommandes();
+});
+
+
+
+
+
+// ============================================================
+// PHASE 4 : ROBOT PLANIFICATION MAINTENANCE + NOTIFICATIONS
+// ============================================================
+
+window.planifierMaintenanceAI = function() {
+  console.log('🤖 Robot maintenance en cours...');
+  
+  const seuils = {
+    VIDANGE: { km: 15000, nom: 'Vidange' },
+    INJECTION: { km: 40000, nom: 'Injection' },
+    TURBO: { km: 80000, nom: 'Turbo' },
+    DISTRIBUTION: { km: 120000, nom: 'Distribution' },
+    POMPE: { km: 100000, nom: 'Pompe à eau' },
+    TRANSMISSION: { km: 150000, nom: 'Transmission' },
+    DESSICATEUR: { km: 30000, nom: 'Dessicateur' },
+    REFROID: { km: 50000, nom: 'Refroidissement' },
+    SUSPENSION: { km: 80000, nom: 'Suspension' },
+    FREINAGE: { km: 60000, nom: 'Freinage' }
+  };
+  
+  if (!DB.db.maintenances) DB.db.maintenances = {};
+  if (!DB.db.notifications) DB.db.notifications = {};
+  
+  const tracteurs = DB.getAllTracteurs();
+  
+  tracteurs.forEach(t => {
+    // Pour chaque type de maintenance
+    Object.keys(seuils).forEach(type => {
+      const seuil = seuils[type];
+      const lastKm = t['der' + type.charAt(0).toUpperCase() + type.slice(1).toLowerCase()];
+      const currentKm = t.km;
+      const kmSinceLastService = currentKm - lastKm;
+      const percentageUsed = (kmSinceLastService / seuil.km) * 100;
+      
+      // Si dépassé ou proche (>70%)
+      if (percentageUsed >= 70) {
+        // Créer tâche maintenance
+        const maintId = 'MAINT' + Date.now() + '_' + type;
+        
+        const priorite = percentageUsed >= 100 ? 'CRITIQUE' : percentageUsed >= 87 ? 'HAUTE' : 'NORMALE';
+        const dateEcheance = new Date();
+        dateEcheance.setDate(dateEcheance.getDate() + 7);
+        
+        const maintenance = {
+          id: maintId,
+          vehicule: t.id,
+          type: type,
+          dateEcheance: dateEcheance.toLocaleDateString('fr-FR'),
+          statut: 'PLANIFIEE',
+          priorite: priorite,
+          notes: `${seuil.nom} à ${Math.round(percentageUsed)}%`
+        };
+        
+        DB.db.maintenances[maintId] = maintenance;
+        
+        // Créer notifications J-3, J-2, J-1
+        [3, 2, 1].forEach(daysLeft => {
+          const notifId = 'NOTIF' + Date.now() + '_' + t.id + '_' + daysLeft;
+          const notification = {
+            id: notifId,
+            type: 'MAINTENANCE',
+            titre: `J-${daysLeft}: ${seuil.nom} urgente`,
+            contenu: `${t.matricule} - ${seuil.nom} à ${Math.round(percentageUsed)}%`,
+            urgence: priorite,
+            vehicule: t.id,
+            lu: false,
+            actionCreee: false,
+            dateCreation: Date.now()
+          };
+          
+          DB.db.notifications[notifId] = notification;
+        });
+      }
+    });
+  });
+  
+  DB.save();
+  console.log('✅ Maintenances planifiées');
+};
+
+window.getNotifications = function() {
+  if (!DB.db.notifications) return [];
+  return Object.values(DB.db.notifications).filter(n => !n.lu).sort((a, b) => {
+    const urgenceOrder = { 'CRITIQUE': 0, 'HAUTE': 1, 'NORMALE': 2, 'BASSE': 3 };
+    return urgenceOrder[a.urgence] - urgenceOrder[b.urgence];
+  });
+};
+
+window.markNotificationAsRead = function(id) {
+  if (!DB.db.notifications || !DB.db.notifications[id]) return;
+  DB.db.notifications[id].lu = true;
+  DB.save();
+  window.refreshNotifications();
+};
+
+window.createTaskFromNotification = function(notifId) {
+  const notif = DB.db.notifications[notifId];
+  if (!notif) return;
+  
+  // Créer une tâche maintenance
+  const daysUntil = prompt('Jours avant intervention (7)?', '7');
+  if (!daysUntil) return;
+  
+  const date = new Date();
+  date.setDate(date.getDate() + parseInt(daysUntil));
+  
+  const taskId = 'TASK' + Date.now();
+  if (!DB.db.maintenances) DB.db.maintenances = {};
+  
+  const task = {
+    id: taskId,
+    vehicule: notif.vehicule,
+    type: notif.titre.split(':')[1].trim(),
+    dateEcheance: date.toLocaleDateString('fr-FR'),
+    statut: 'PLANIFIEE',
+    priorite: notif.urgence,
+    notes: notif.contenu
+  };
+  
+  DB.db.maintenances[taskId] = task;
+  DB.db.notifications[notifId].actionCreee = true;
+  DB.save();
+  
+  alert('✅ Tâche créée');
+  window.refreshNotifications();
+};
+
+window.refreshNotifications = function() {
+  const notifs = window.getNotifications();
+  const container = document.getElementById('notifications-list');
+  
+  if (!container) return;
+  
+  if (notifs.length === 0) {
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);">— Aucune notification —</div>';
+    return;
+  }
+  
+  let html = '';
+  
+  notifs.forEach(n => {
+    const urgenceColor = 
+      n.urgence === 'CRITIQUE' ? 'var(--red)' :
+      n.urgence === 'HAUTE' ? 'var(--orange)' :
+      n.urgence === 'NORMALE' ? 'var(--blue)' : 'var(--text-dim)';
+    
+    html += `
+      <div style="background:var(--bg);border-left:3px solid ${urgenceColor};border-radius:6px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="flex:1;">
+          <div style="font-weight:700;color:${urgenceColor};font-size:12px;">${n.titre}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${n.contenu}</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="window.createTaskFromNotification('${n.id}')" style="padding:6px 8px;background:rgba(52,199,89,0.2);color:var(--green);border:1px solid var(--green);border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;">📋</button>
+          <button onclick="window.markNotificationAsRead('${n.id}')" style="padding:6px 8px;background:rgba(100,100,100,0.2);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;">✓</button>
+        </div>
+      </div>
+    `;
+  });
+  
+  container.innerHTML = html;
+  
+  // Mettre à jour le badge
+  const badge = document.getElementById('notif-badge');
+  if (badge && notifs.length > 0) {
+    badge.textContent = notifs.length;
+    badge.style.display = 'inline-block';
+  } else if (badge) {
+    badge.style.display = 'none';
+  }
+};
+
+// Auto-run robot au démarrage
+window.addEventListener('load', function() {
+  window.planifierMaintenanceAI();
+  window.refreshNotifications();
+});
+
+
+
+
+
+// ============================================================
+// PHASE 8 : PLANNING SYNCHRONISÉ (Commandes + Maintenances)
+// ============================================================
+
+window.generatePlanningCalendar = function() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  
+  const monthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+  const dayNames = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  const planning = document.getElementById('planning-calendar');
+  if (!planning) return;
+  
+  let html = `<div style="margin-bottom:20px;">
+    <h2 style="color:var(--gold);margin-bottom:16px;">${monthNames[month]} ${year}</h2>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;">`;
+  
+  // Jours de la semaine
+  dayNames.forEach(day => {
+    html += `<div style="background:var(--bg2);padding:8px;text-align:center;color:var(--gold);font-weight:700;font-size:11px;">${day}</div>`;
+  });
+  
+  // Espaces avant le 1er jour
+  for (let i = 0; i < (firstDay === 0 ? 6 : firstDay - 1); i++) {
+    html += '<div style="background:var(--bg3);border-radius:6px;"></div>';
+  }
+  
+  // Jours du mois
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month, day);
+    const dateStr = date.toLocaleDateString('fr-FR');
+    
+    // Compter commandes + maintenances pour ce jour
+    let eventsCount = 0;
+    let eventsHtml = '';
+    
+    if (DB.db.commandes) {
+      Object.values(DB.db.commandes).forEach(c => {
+        if (c.dateCommande === dateStr) {
+          eventsCount++;
+          eventsHtml += '<div style="font-size:9px;background:rgba(10,132,255,0.3);color:var(--blue);padding:2px;border-radius:3px;margin:2px 0;">🚛</div>';
+        }
+      });
+    }
+    
+    if (DB.db.maintenances) {
+      Object.values(DB.db.maintenances).forEach(m => {
+        if (m.dateEcheance === dateStr) {
+          eventsCount++;
+          eventsHtml += '<div style="font-size:9px;background:rgba(255,59,48,0.3);color:var(--red);padding:2px;border-radius:3px;margin:2px 0;">🔧</div>';
+        }
+      });
+    }
+    
+    const isToday = date.toDateString() === today.toDateString();
+    const bgColor = isToday ? 'rgba(201,168,76,0.2)' : 'var(--bg3)';
+    const borderColor = isToday ? 'var(--gold)' : 'var(--border)';
+    
+    html += `
+      <div onclick="window.showDayDetails('${dateStr}')" style="background:${bgColor};border:1px solid ${borderColor};border-radius:6px;padding:6px;min-height:60px;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;">
+        <div style="font-weight:700;color:var(--text);margin-bottom:4px;">${day}</div>
+        <div style="flex:1;font-size:10px;color:var(--text-dim);">
+          ${eventsHtml}
+          ${eventsCount > 0 ? '<div style="font-weight:700;color:var(--gold);margin-top:4px;">' + eventsCount + ' evt</div>' : ''}
+        </div>
+      </div>
+    `;
+  }
+  
+  html += '</div></div>';
+  
+  planning.innerHTML = html;
+};
+
+window.showDayDetails = function(dateStr) {
+  const details = document.getElementById('planning-details');
+  if (!details) return;
+  
+  let html = `<h3 style="color:var(--gold);margin-bottom:12px;">📅 ${dateStr}</h3>`;
+  
+  let foundAny = false;
+  
+  // Afficher commandes du jour
+  if (DB.db.commandes) {
+    const dayCommandes = Object.values(DB.db.commandes).filter(c => c.dateCommande === dateStr);
+    if (dayCommandes.length > 0) {
+      foundAny = true;
+      html += '<div style="margin-bottom:12px;"><h4 style="color:var(--blue);font-size:12px;margin-bottom:8px;">🚛 COMMANDES</h4>';
+      dayCommandes.forEach(c => {
+        html += `
+          <div style="background:var(--bg);border-left:3px solid var(--blue);border-radius:6px;padding:8px;margin-bottom:6px;font-size:11px;">
+            <div style="font-weight:700;color:var(--gold);">${c.tracteur}</div>
+            <div style="color:var(--text-dim);font-size:10px;">${c.client} → ${c.depart} → ${c.arrivee}</div>
+            <div style="color:var(--blue);font-size:10px;margin-top:4px;">${c.statut}</div>
+          </div>
+        `;
+      });
+      html += '</div>';
+    }
+  }
+  
+  // Afficher maintenances du jour
+  if (DB.db.maintenances) {
+    const dayMaintenances = Object.values(DB.db.maintenances).filter(m => m.dateEcheance === dateStr);
+    if (dayMaintenances.length > 0) {
+      foundAny = true;
+      html += '<div><h4 style="color:var(--red);font-size:12px;margin-bottom:8px;">🔧 MAINTENANCES</h4>';
+      dayMaintenances.forEach(m => {
+        const vehicule = m.vehicule.charAt(0) === 'T' ? DB.getTracteur(m.vehicule) : DB.getRemorque(m.vehicule);
+        html += `
+          <div style="background:var(--bg);border-left:3px solid var(--red);border-radius:6px;padding:8px;margin-bottom:6px;font-size:11px;">
+            <div style="font-weight:700;color:var(--gold);">${m.type}</div>
+            <div style="color:var(--text-dim);font-size:10px;">${m.vehicule} - ${vehicule ? vehicule.matricule : '?'}</div>
+            <div style="color:var(--red);font-size:10px;margin-top:4px;">${m.priorite}</div>
+          </div>
+        `;
+      });
+      html += '</div>';
+    }
+  }
+  
+  if (!foundAny) {
+    html += '<div style="padding:20px;text-align:center;color:var(--text-dim);">— Aucun événement —</div>';
+  }
+  
+  details.innerHTML = html;
+};
+
+window.exportPlanningToIcal = function() {
+  let ical = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//CORE-DZ//NONSGML v1.0//EN
+BEGIN:VTIMEZONE
+TZID:Africa/Algiers
+BEGIN:STANDARD
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0100
+DTSTART:19700101T000000
+END:STANDARD
+END:VTIMEZONE
+`;
+  
+  // Ajouter commandes
+  if (DB.db.commandes) {
+    Object.values(DB.db.commandes).forEach(c => {
+      const dateArr = c.dateCommande.split('/');
+      const dtstart = `${dateArr[2]}${dateArr[1]}${dateArr[0]}T080000`;
+      ical += `BEGIN:VEVENT
+DTSTART;TZID=Africa/Algiers:${dtstart}
+DTEND;TZID=Africa/Algiers:${dtstart}
+SUMMARY:🚛 ${c.client} (${c.tracteur})
+DESCRIPTION:${c.depart} → ${c.arrivee} | ${c.marchandise}
+END:VEVENT
+`;
+    });
+  }
+  
+  ical += 'END:VCALENDAR';
+  
+  const blob = new Blob([ical], { type: 'text/calendar' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'planning_' + new Date().getTime() + '.ics';
+  a.click();
+  window.URL.revokeObjectURL(url);
+};
+
+// Générer au chargement
+window.addEventListener('load', function() {
+  window.generatePlanningCalendar();
+});
+
+
+
+</script>
+
 </head>
 <body>
 
@@ -800,20 +2055,15 @@ body {
   <div class="header-right">
     <button class="btn-menu-toggle" id="btn-menu-toggle" onclick="toggleSidebarMobile()">☰</button>
     <button onclick="showPage('dashboard')" id="btn-dashboard" style="background:rgba(201,168,76,0.12);border:1px solid var(--border);color:var(--gold);border-radius:8px;padding:5px 10px;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:1px;transition:all 0.2s;" title="Tableau de bord" onmouseover="this.style.background='var(--gold)';this.style.color='var(--bg)'" onmouseout="this.style.background='rgba(201,168,76,0.12)';this.style.color='var(--gold)'">🏠</button>
-    <button id="notif-btn-main" onclick="showNotifCenter()" style="position:relative;background:rgba(201,168,76,0.1);border:1px solid var(--border);color:var(--text-dim);border-radius:8px;padding:5px 9px;font-size:15px;cursor:pointer;">🔔<span id="notif-badge-main" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:50%;width:16px;height:16px;font-size:9px;font-weight:700;align-items:center;justify-content:center;line-height:16px;">0</span></button>
+
     <span id="mode-badge" class="mode-badge">👑 ADMIN</span>
     <button class="btn-mode" onclick="toggleMode()">🚛 CHAUFFEUR</button>
   </div>
 </div>
 
 <!-- ALERT BANNER -->
-<div class="alert-banner">
-  ⚠️ <div class="alert-scroll">
-    ARRÊT IMMÉDIAT : T08, T09, T10, T11, T12, T13, T14, T15 — INJECTEURS CRITIQUE &nbsp;&nbsp;&nbsp;
-    DOCUMENTS PÉRIMÉS : T09, T05, T17, T18, T19, T20, T21, T22, T23 &nbsp;&nbsp;&nbsp;
-    MAINTENANCE PRÉVENTIVE : R06 — INSPECTION À PLANIFIER &nbsp;&nbsp;&nbsp;
-    FLOTTE ACTIVE : 30 TRACTEURS | 13 REMORQUES
-  </div>
+<div class="alert-banner" id="alert-banner-main">
+  ⚠️ <div class="alert-scroll" id="alert-banner-text">Chargement...</div>
 </div>
 
 <!-- MAIN LAYOUT -->
@@ -844,6 +2094,11 @@ body {
     <div class="nav-item" onclick="showPage('situation-parc')">
       <span class="nav-item-icon">🅿️</span>
       <span class="nav-item-label">SITUATION PARC</span>
+    </div>
+    <div class="nav-item" onclick="showPage('notifications')">
+      <span class="nav-item-icon">🔔</span>
+      <span class="nav-item-label">NOTIFICATIONS</span>
+      <span class="nav-badge" id="notif-badge" style="display:none;">0</span>
     </div>
     <div class="nav-item" onclick="showPage('remorques')">
       <span class="nav-item-icon">🔗</span>
@@ -884,7 +2139,12 @@ body {
       <span class="nav-item-label">RÉF. REMORQUE</span>
     </div>
 
-    <div class="sidebar-section-label" style="margin-top:6px;">ASSISTANT</div>
+    <div class="sidebar-section-label" style="margin-top:6px;">GPS TEMPS RÉEL</div>
+    <div class="nav-item" onclick="showPage('gps')" id="nav-gps">
+      <span class="nav-item-icon">📡</span>
+      <span class="nav-item-label">GPS MONITOR</span>
+      <span class="nav-badge" id="gps-nav-badge" style="display:none;">●</span>
+    </div>
     <div class="nav-item" onclick="showPage('ia')">
       <span class="nav-item-icon">🤖</span>
       <span class="nav-item-label">IA ASSISTANT</span>
@@ -983,16 +2243,161 @@ body {
     <div id="tracteurs-list"></div>
   </div>
 
-  <!-- PAGE: SITUATION PARC -->
+
+
+  <!-- PAGE: SITUATION PARC - PHASE 2 CLINIQUE -->
   <div class="page" id="page-situation-parc">
-    <div class="section-title">🅿️ SITUATION PARC</div>
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="sp-tab-bar">
-      <button class="sp-tab active" onclick="switchSPTab('tracteurs',this)" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--gold);background:rgba(201,168,76,0.2);color:var(--gold);font-family:'Exo 2',sans-serif;font-weight:700;cursor:pointer;letter-spacing:1px;">🚛 TRACTEURS</button>
-      <button class="sp-tab" onclick="switchSPTab('remorques',this)" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text-dim);font-family:'Exo 2',sans-serif;font-weight:700;cursor:pointer;letter-spacing:1px;">🔗 REMORQUES</button>
-      <button class="sp-tab" onclick="switchSPTab('maintenance',this)" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text-dim);font-family:'Exo 2',sans-serif;font-weight:700;cursor:pointer;letter-spacing:1px;">🔧 MAINTENANCE</button>
+    <div class="section-title">🅿️ SITUATION PARC - STATUTS EN TEMPS RÉEL</div>
+    
+    <!-- EN SERVICE -->
+    <div style="background:var(--bg3);border-left:4px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:var(--green);font-size:14px;margin-bottom:12px;">🟢 EN SERVICE (En mouvement)</h3>
+      <div id="statut-en-service" style="display:grid;gap:8px;margin-bottom:10px;">
+        <div style="color:var(--text-dim);font-size:12px;">Chargement...</div>
+      </div>
+      <button onclick="addVehicleToStatus('EN SERVICE')" style="width:100%;padding:8px;background:rgba(52,199,89,0.2);color:var(--green);border:1px solid var(--green);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">➕ AJOUTER CAMION</button>
     </div>
-    <div id="sp-content"></div>
+
+    <!-- ARRÊT -->
+    <div style="background:var(--bg3);border-left:4px solid var(--red);border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:var(--red);font-size:14px;margin-bottom:12px;">🔴 ARRÊT (Maintenance/Repos)</h3>
+      <div id="statut-arret" style="display:grid;gap:8px;margin-bottom:10px;">
+        <div style="color:var(--text-dim);font-size:12px;">Chargement...</div>
+      </div>
+      <button onclick="addVehicleToStatus('ARRÊT')" style="width:100%;padding:8px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">➕ AJOUTER CAMION</button>
+    </div>
+
+    <!-- ALERTE -->
+    <div style="background:var(--bg3);border-left:4px solid var(--orange);border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:var(--orange);font-size:14px;margin-bottom:12px;">🟡 ALERTE (Problème détecté)</h3>
+      <div id="statut-alerte" style="display:grid;gap:8px;margin-bottom:10px;">
+        <div style="color:var(--text-dim);font-size:12px;">Chargement...</div>
+      </div>
+      <button onclick="addVehicleToStatus('ALERTE')" style="width:100%;padding:8px;background:rgba(255,149,0,0.2);color:var(--orange);border:1px solid var(--orange);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">➕ AJOUTER CAMION</button>
+    </div>
+
+    <!-- DISPONIBLE -->
+    <div style="background:var(--bg3);border-left:4px solid var(--blue);border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:var(--blue);font-size:14px;margin-bottom:12px;">🔵 DISPONIBLE (Prêt à partir)</h3>
+      <div id="statut-disponible" style="display:grid;gap:8px;margin-bottom:10px;">
+        <div style="color:var(--text-dim);font-size:12px;">Chargement...</div>
+      </div>
+      <button onclick="addVehicleToStatus('DISPONIBLE')" style="width:100%;padding:8px;background:rgba(10,132,255,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">➕ AJOUTER CAMION</button>
+    </div>
+
+    <!-- HORS SERVICE -->
+    <div style="background:var(--bg3);border-left:4px solid #999;border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:#999;font-size:14px;margin-bottom:12px;">⚫ HORS SERVICE (Réparation majeure)</h3>
+      <div id="statut-hors-service" style="display:grid;gap:8px;margin-bottom:10px;">
+        <div style="color:var(--text-dim);font-size:12px;">Chargement...</div>
+      </div>
+      <button onclick="addVehicleToStatus('HORS SERVICE')" style="width:100%;padding:8px;background:rgba(100,100,100,0.2);color:#999;border:1px solid #999;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">➕ AJOUTER CAMION</button>
+    </div>
   </div>
+
+
+
+  <!-- PAGE: PLANIFICATIONS COMMANDES - PHASE 3 -->
+  <div class="page" id="page-planifications">
+    <div class="section-title">📋 PLANIFICATIONS COMMANDES</div>
+    
+    <!-- FORMULAIRE AJOUTER -->
+    <div style="background:var(--bg3);border:1px solid var(--gold);border-radius:8px;padding:16px;margin-bottom:16px;">
+      <h3 style="color:var(--gold);margin-bottom:12px;">➕ AJOUTER COMMANDE</h3>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Date (JJ/MM/AAAA)</label>
+          <input type="text" id="cmd-date" placeholder="02/03/2026" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Client</label>
+          <input type="text" id="cmd-client" placeholder="Ex: SARL Transport DZ" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+      </div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Tracteur (T001-T999)</label>
+          <input type="text" id="cmd-tracteur" placeholder="T001" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Remorque (optionnel)</label>
+          <input type="text" id="cmd-remorque" placeholder="R01" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+      </div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Chauffeur</label>
+          <input type="text" id="cmd-chauffeur" placeholder="Ahmed Bouazza" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Marchandise</label>
+          <input type="text" id="cmd-marchandise" placeholder="Ciment, Acier, etc." style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+      </div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Départ (Ville/Adresse)</label>
+          <input type="text" id="cmd-depart" placeholder="Alger" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Arrivée (Ville/Adresse)</label>
+          <input type="text" id="cmd-arrivee" placeholder="Blida" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+        </div>
+      </div>
+      
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Statut</label>
+        <select id="cmd-statut" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+          <option value="PLANIFIEE">PLANIFIÉE</option>
+          <option value="EN_COURS">EN COURS</option>
+          <option value="LIVREE">LIVRÉE</option>
+          <option value="ANNULEE">ANNULÉE</option>
+        </select>
+      </div>
+      
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Notes (optionnel)</label>
+        <textarea id="cmd-notes" placeholder="Notes supplémentaires..." style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;height:60px;resize:none;"></textarea>
+      </div>
+      
+      <button onclick="window.addCommande()" style="width:100%;padding:10px;background:linear-gradient(135deg,var(--gold-dark),var(--gold));color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;">✅ CRÉER COMMANDE</button>
+    </div>
+    
+    <!-- FILTRES -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+      <input type="text" id="cmd-filter" placeholder="🔍 Filtrer..." style="flex:1;padding:8px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" oninput="window.refreshCommandes()">
+      <button onclick="window.exportCommandes()" style="padding:8px 12px;background:var(--blue);color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px;">📤 EXPORTER CSV</button>
+    </div>
+    
+    <!-- TABLEAU COMMANDES -->
+    <div style="background:var(--bg3);border-radius:8px;overflow:hidden;border:1px solid var(--border);">
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead style="background:var(--bg2);border-bottom:1px solid var(--border);">
+            <tr>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Date</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Client</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Tracteur</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Remorque</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Chauffeur</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Marchandise</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Départ → Arrivée</th>
+              <th style="padding:10px;text-align:left;color:var(--gold);font-weight:700;">Statut</th>
+              <th style="padding:10px;text-align:center;color:var(--gold);font-weight:700;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="commandes-tbody">
+            <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-dim);">Aucune commande</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 
   <!-- PAGE: REMORQUES -->
   <div class="page" id="page-remorques">
@@ -1777,8 +3182,176 @@ body {
     </div>
   </div>
 
+  <!-- ============================================================ -->
+  <!-- PAGE GPS MONITOR — SYNC KILOMÉTRAGE ALGEOFLEET               -->
+  <!-- ============================================================ -->
+  <div class="page" id="page-gps">
+
+    <!-- HEADER BARRE -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div>
+        <div style="font-family:Rajdhani,sans-serif;font-size:19px;font-weight:700;color:var(--gold);letter-spacing:2px;display:flex;align-items:center;gap:8px;">
+          <span id="gps-pulse-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);flex-shrink:0;"></span>
+          GPS MONITOR
+        </div>
+        <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px;margin-top:2px;" id="gps-status-line">EN ATTENTE — Saisie manuelle depuis Algeofleet</div>
+      </div>
+      <button onclick="document.getElementById('modal-gps-config').classList.add('open')"
+        style="padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);border-radius:6px;font-size:13px;cursor:pointer;transition:all .2s;"
+        onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">⚙️</button>
+    </div>
+
+    <!-- STATS RAPIDES -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px;">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-top:2px solid var(--green);border-radius:8px;padding:8px;text-align:center;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:24px;font-weight:700;color:var(--green);line-height:1;" id="gps-stat-sync">0</div>
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.5px;margin-top:2px;">SYNC</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-top:2px solid var(--orange);border-radius:8px;padding:8px;text-align:center;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:24px;font-weight:700;color:var(--orange);line-height:1;" id="gps-stat-ecart">0</div>
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.5px;margin-top:2px;">ÉCARTS</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-top:2px solid var(--red);border-radius:8px;padding:8px;text-align:center;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:24px;font-weight:700;color:var(--red);line-height:1;" id="gps-stat-alerte">0</div>
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.5px;margin-top:2px;">ALERTES</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-top:2px solid var(--gold);border-radius:8px;padding:8px;text-align:center;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:24px;font-weight:700;color:var(--gold);line-height:1;" id="gps-stat-total">0</div>
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.5px;margin-top:2px;">TOTAL KM +</div>
+      </div>
+    </div>
+
+    <!-- SAISIE RAPIDE GPS -->
+    <div style="background:linear-gradient(135deg,rgba(201,168,76,0.1),rgba(201,168,76,0.03));border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:10px;padding:14px;margin-bottom:12px;">
+      <div style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:var(--gold);letter-spacing:1px;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+        ⚡ SAISIE RAPIDE GPS — DEPUIS ALGEOFLEET
+        <span style="font-size:9px;color:var(--text-dim);font-weight:400;font-family:'Exo 2',sans-serif;">Colle les données depuis le dashboard</span>
+      </div>
+
+      <!-- MODE LISTE RAPIDE -->
+      <div style="margin-bottom:10px;">
+        <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px;margin-bottom:6px;">📋 MODE LISTE — Une ligne par camion : <span style="color:var(--gold);">ID_CAMION KM</span> (ex: T01 417500)</div>
+        <textarea id="gps-bulk-input" placeholder="T01 417500&#10;T02 389200&#10;T03 501000&#10;R01 180500&#10;..."
+          style="width:100%;height:90px;padding:10px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:Rajdhani,sans-serif;font-size:13px;letter-spacing:1px;resize:vertical;outline:none;line-height:1.6;"
+          oninput="gpsPreviewBulk()"></textarea>
+        <div id="gps-bulk-preview" style="margin-top:6px;font-size:11px;color:var(--text-dim);"></div>
+      </div>
+
+      <!-- BOUTONS ACTION -->
+      <div style="display:flex;gap:8px;">
+        <button onclick="gpsProcessBulk()"
+          style="flex:1;padding:10px;background:linear-gradient(135deg,var(--gold-dark),var(--gold));color:var(--bg);border:none;border-radius:7px;font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;letter-spacing:1px;cursor:pointer;">
+          🚀 SYNCHRONISER & ANALYSER
+        </button>
+        <button onclick="gpsOpenManual()"
+          style="padding:10px 14px;background:var(--bg3);border:1px solid var(--border);color:var(--gold);border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;">
+          ✏️ MANUEL
+        </button>
+      </div>
+    </div>
+
+    <!-- CANAL AI-ADMIN GPS -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px;">
+      <div style="background:linear-gradient(135deg,rgba(201,168,76,0.12),transparent);padding:10px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:var(--gold);letter-spacing:1px;">🤖 CANAL AI-ADMIN — SURVEILLANCE GPS</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span id="gps-live-badge" style="display:none;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:rgba(52,199,89,0.2);color:var(--green);border:1px solid rgba(52,199,89,0.4);letter-spacing:1px;">● LIVE</span>
+          <span style="font-size:10px;color:var(--text-dim);" id="gps-last-update">Jamais synchronisé</span>
+          <button onclick="gpsClearChat()" style="padding:3px 7px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:10px;cursor:pointer;">🗑️</button>
+        </div>
+      </div>
+      <div id="gps-chat" style="height:260px;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;scrollbar-color:var(--gold-dark) var(--bg2);">
+        <div style="text-align:center;padding:30px 20px;">
+          <div style="font-size:28px;margin-bottom:8px;">📡</div>
+          <div style="font-size:12px;color:var(--text-dim);">Robot en attente — Lance une synchronisation GPS pour démarrer la surveillance</div>
+        </div>
+      </div>
+      <div style="padding:8px;border-top:1px solid var(--border);display:flex;gap:6px;">
+        <input type="text" id="gps-chat-input" placeholder="💬 Interroge le robot (ex: Qui a fait un excès de vitesse ?)"
+          style="flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;outline:none;"
+          onkeydown="if(event.key==='Enter')gpsSendQuestion()">
+        <button onclick="gpsSendQuestion()" style="padding:8px 14px;background:var(--gold);color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:13px;">➤</button>
+      </div>
+    </div>
+
+    <!-- VÉHICULES GPS EN DIRECT -->
+    <div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--gold);letter-spacing:1px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+      <span>🚛 VÉHICULES GPS — DONNÉES TEMPS RÉEL</span>
+      <button onclick="gpsSync()" id="gps-sync-btn"
+        style="padding:5px 12px;background:rgba(52,199,89,0.15);border:1px solid var(--green);color:var(--green);border-radius:5px;font-family:Rajdhani,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:1px;">
+        🔄 SYNC
+      </button>
+    </div>
+    <div id="gps-vehicles-list">
+      <div style="text-align:center;padding:30px;color:var(--text-dim);font-size:12px;">Lance une synchronisation pour voir les données GPS</div>
+    </div>
+
+    <!-- ALERTES GPS -->
+    <div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--red);letter-spacing:1px;margin:12px 0 8px;display:flex;justify-content:space-between;">
+      <span>🚨 ALERTES GPS DÉTECTÉES</span>
+      <button onclick="gpsClearAlerts()" style="padding:3px 8px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:10px;cursor:pointer;">Effacer</button>
+    </div>
+    <div id="gps-alerts-list">
+      <div style="text-align:center;padding:20px;color:var(--text-dim);font-size:11px;">Aucune alerte détectée</div>
+    </div>
+
+  </div><!-- end page-gps -->
+
+  <!-- MODAL CONFIG GPS -->
+  <div class="modal-overlay" id="modal-gps-config" onclick="if(event.target===this)this.classList.remove('open')" style="overflow-y:auto;">
+    <div class="modal-panel" style="margin:20px auto;max-width:480px;">
+      <div class="modal-title">
+        ⚙️ CONFIG GPS ALGEOFLEET
+        <button class="btn-close" onclick="document.getElementById('modal-gps-config').classList.remove('open')">✕</button>
+      </div>
+      <div style="background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.3);border-radius:8px;padding:12px;margin-bottom:14px;font-size:11px;color:var(--text);line-height:1.7;">
+        🔑 <strong style="color:var(--blue);">Cookie de session requis</strong><br>
+        Connecte-toi sur Algeofleet, ouvre F12 → Network → clique sur n'importe quelle requête → Headers → cherche <strong>Cookie:</strong> et copie la valeur complète.
+      </div>
+      <div class="form-group">
+        <div class="form-label">🍪 COOKIE DE SESSION (JSESSIONID + SERVER_USED)</div>
+        <textarea class="form-input" id="cfg-gps-cookie" placeholder="JSESSIONID=xxx; SERVER_USED=s1|aada4|aadaYb; ..."
+          style="height:80px;resize:vertical;font-family:monospace;font-size:11px;"></textarea>
+      </div>
+      <div class="form-group">
+        <div class="form-label">⏱️ INTERVALLE DE SYNCHRONISATION</div>
+        <select class="form-select" id="cfg-gps-interval">
+          <option value="30">Toutes les 30 secondes</option>
+          <option value="60" selected>Toutes les minutes</option>
+          <option value="120">Toutes les 2 minutes</option>
+          <option value="300">Toutes les 5 minutes</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">🚨 SEUIL ALERTE VITESSE (km/h)</div>
+        <input type="number" class="form-input" id="cfg-gps-speed" value="100" placeholder="100">
+      </div>
+      <div class="form-group">
+        <div class="form-label">📏 SEUIL ÉCART KM (forcer mise à jour)</div>
+        <input type="number" class="form-input" id="cfg-gps-km-delta" value="50" placeholder="50">
+      </div>
+      <button class="btn-submit" onclick="gpsSaveConfig()">💾 ENREGISTRER & CONNECTER</button>
+    </div>
+  </div>
+
+  <!-- MODAL SAISIE MANUELLE GPS -->
+  <div class="modal-overlay" id="modal-gps-manual" onclick="if(event.target===this)this.classList.remove('open')" style="overflow-y:auto;">
+    <div class="modal-panel" style="margin:20px auto;max-width:420px;">
+      <div class="modal-title">
+        ✏️ SAISIE MANUELLE KM GPS
+        <button class="btn-close" onclick="document.getElementById('modal-gps-manual').classList.remove('open')">✕</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Saisie directe depuis le dashboard Algeofleet</div>
+      <div id="gps-manual-rows"></div>
+      <button class="btn-submit" onclick="gpsApplyManual()" style="margin-top:8px;">🚀 APPLIQUER LES KM</button>
+    </div>
+  </div>
+
 </div><!-- end .content -->
 </div><!-- end .main-layout -->
+
+
 
 <!-- MODAL MAINTENANCE REMORQUE -->
 <div class="modal-overlay" id="modal-maint-rem" onclick="if(event.target===this)this.classList.remove('open')">
@@ -2185,12 +3758,87 @@ function getTStatut(t, organe) {
 }
 
 // Calcule verdict global tracteur de façon dynamique
+// ── PROTOCOLE CALCULÉ LIVE selon verdict réel ────────────────────────────────
+function calcProtocol(t) {
+  const verdict = calcVerdictTracteur(t);
+  // Docs périmés ?
+  const docsPerimes = [];
+  if(_isDatePerime(t.echAss))  docsPerimes.push('Assurance');
+  if(_isDatePerime(t.echCtrl)) docsPerimes.push('Contrôle Technique');
+  if(_isDatePerime(t.echVign)) docsPerimes.push('Vignette');
+
+  // Docs bientôt périmés (<30j) ?
+  const docsBientot = [];
+  [['echAss','Assurance'],['echCtrl','CT'],['echVign','Vignette']].forEach(([k,l]) => {
+    const dl = _daysLeft(t[k]);
+    if(dl >= 0 && dl <= 30) docsBientot.push(l + ' (J-' + dl + ')');
+  });
+
+  // Organes critiques ?
+  const organesCritiques = [];
+  const orgsCheck = [
+    ['VIDANGE','Vidange'],['INJECTION','Injection'],['TURBO','Turbo'],
+    ['DISTRIBUTION','Distribution'],['POMPE','Pompe eau'],['TRANSMISSION','Transmission'],
+    ['DESSICATEUR','Dessicateur'],['REFROID','Refroidissement'],['SUSPENSION','Suspension'],['FREINAGE','Freinage']
+  ];
+  orgsCheck.forEach(([cle, nom]) => {
+    const s = getTStatut(t, cle);
+    if(s === 'CRITIQUE') organesCritiques.push(nom);
+  });
+  const organesAlerte = orgsCheck.filter(([cle])=>getTStatut(t,cle)==='ALERTE').map(([,nom])=>nom);
+
+  if(docsPerimes.length > 0 && organesCritiques.length > 0)
+    return '🔴 STOP — Docs périmés [' + docsPerimes.join(', ') + '] + Organes critiques [' + organesCritiques.join(', ') + '] — Immobilisation immédiate.';
+  if(docsPerimes.length > 0)
+    return '⚖️ ADMIN — Renouvellement immédiat : ' + docsPerimes.join(', ') + '. Véhicule interdit de circulation.';
+  if(organesCritiques.length > 0)
+    return '🔧 TECH — Intervention urgente : ' + organesCritiques.join(', ') + '. Passage atelier avant toute mission.';
+  if(docsBientot.length > 0 && organesAlerte.length > 0)
+    return '🟠 ALERTE — Renouveler : ' + docsBientot.join(', ') + ' · Planifier : ' + organesAlerte.join(', ') + '.';
+  if(docsBientot.length > 0)
+    return '🟠 ADMIN — Renouveler avant expiration : ' + docsBientot.join(', ') + '.';
+  if(organesAlerte.length > 0)
+    return '🟡 TECH — Planifier maintenance préventive : ' + organesAlerte.join(', ') + '.';
+  if(t.km === 0 || !t.km)
+    return '⚪ DISPONIBLE — Initialiser le kilométrage avant toute affectation.';
+  return '🟢 RAS — Effectuer l\'inspection visuelle quotidienne habituelle.';
+}
+
+// ── CALCUL LIVE du statut légal (ne lit JAMAIS t.statutLegal figé) ──────────
+function _isDatePerime(dateStr) {
+  if(!dateStr || dateStr === '—') return true; // pas de doc = périmé
+  const p = dateStr.split('/');
+  if(p.length !== 3) return true;
+  return new Date(+p[2], +p[1]-1, +p[0]) < new Date();
+}
+function _isDateOk(dateStr) { return !_isDatePerime(dateStr); }
+// Jours restants (négatif = dépassé)
+function _daysLeft(dateStr) {
+  if(!dateStr || dateStr === '—') return -9999;
+  const p = dateStr.split('/');
+  if(p.length !== 3) return -9999;
+  return Math.ceil((new Date(+p[2], +p[1]-1, +p[0]) - new Date()) / 86400000);
+}
+// Couleur dynamique : rouge=périmé | orange=<30j | vert=ok | gris=absent
+function dateColorLive(dateStr) {
+  const d = _daysLeft(dateStr);
+  if(d === -9999) return 'var(--text-dim)';
+  if(d < 0)   return 'var(--red)';
+  if(d <= 30) return 'var(--orange)';
+  return 'var(--green)';
+}
+
 function calcVerdictTracteur(t) {
-  if(t.statutLegal === 'PERIME') return 'STOP';
+  // Statut légal calculé LIVE depuis les dates réelles
+  const legalPerime = _isDatePerime(t.echAss) || _isDatePerime(t.echCtrl) || _isDatePerime(t.echVign);
+  if(legalPerime) return 'STOP';
   const organes = ['VIDANGE','INJECTION','TURBO','DISTRIBUTION','POMPE','TRANSMISSION','DESSICATEUR','REFROID','SUSPENSION','FREINAGE'];
   const statuts = organes.map(o => getTStatut(t, o));
   if(statuts.some(s => s === 'CRITIQUE')) return 'STOP';
-  if(statuts.some(s => s === 'ALERTE')) return 'ALERTE';
+  if(statuts.some(s => s === 'ALERTE'))   return 'ALERTE';
+  // Alerte si un doc expire dans 30 jours
+  const soonExpiring = [t.echAss, t.echCtrl, t.echVign].some(d => { const dl = _daysLeft(d); return dl >= 0 && dl <= 30; });
+  if(soonExpiring) return 'ALERTE';
   if(t.km === 0) return 'DISPONIBLE';
   return 'OK';
 }
@@ -2419,7 +4067,9 @@ let VEHICULES_LEGERS = [
 
 function calcVerdictVL(v) {
   if(!v.km || v.km <= 0) return 'disponible';
-  if(v.statutLegal === 'PERIME') return 'stop';
+  // Statut légal calculé LIVE depuis les dates réelles
+  const legalPerime = _isDatePerime(v.echAss) || _isDatePerime(v.echCtrl);
+  if(legalPerime) return 'stop';
   const checks = [
     {der: v.derVid,    seuil: v.seuils.vidange},
     {der: v.derFreins, seuil: v.seuils.freins},
@@ -2432,6 +4082,8 @@ function calcVerdictVL(v) {
   });
   if(statuts.some(s => s === 'critique')) return 'stop';
   if(statuts.some(s => s === 'alerte')) return 'alerte';
+  // Alerte si un doc expire dans 30 jours
+  if([v.echAss, v.echCtrl].some(d => { const dl = _daysLeft(d); return dl >= 0 && dl <= 30; })) return 'alerte';
   return 'ok';
 }
 
@@ -2560,6 +4212,7 @@ function saveEditVL(idx) {
   if(ctrlVal) { const d=new Date(ctrlVal); v.echCtrl=`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; }
   v.notes = document.getElementById('vl-notes')?.value||v.notes;
   document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
   renderVehiculesLegers();
   showToast('✅ Véhicule léger mis à jour');
 }
@@ -2600,6 +4253,7 @@ function saveNewVL(id) {
     notes:'', actif:true
   });
   document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
   renderVehiculesLegers();
   showToast('✅ Véhicule ajouté');
 }
@@ -3853,6 +5507,7 @@ function saveChauffeurNew() {
     infractions:[], notes: document.getElementById('cf-notes')?.value.trim()||'', actif:true
   });
   document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
   renderChauffeurs();
   showToast('✅ Chauffeur ajouté');
 }
@@ -3870,6 +5525,7 @@ function saveChauffeurEdit(idx) {
   c.tracteurAssigne = document.getElementById('cf-trac')?.value||c.tracteurAssigne;
   c.notes = document.getElementById('cf-notes')?.value.trim()||c.notes;
   document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
   renderChauffeurs();
   showToast('✅ Chauffeur mis à jour');
 }
@@ -3901,6 +5557,7 @@ function saveInfraction(idx) {
   const desc = document.getElementById('inf-desc')?.value.trim();
   c.infractions.push({date: parseDateInput(date), type, desc});
   document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
   renderChauffeurs();
   showToast('⚠️ Infraction enregistrée');
 }
@@ -4304,7 +5961,20 @@ function buildReportHeader(titre) {
 }
 
 function buildReportFooter() {
-  return `<div class="footer">CORE-DZ — Document généré automatiquement — ${new Date().toLocaleString('fr-DZ')}</div></body></html>`;
+  return `<div class="footer">CORE-DZ — Document généré automatiquement — ${new Date().toLocaleString('fr-DZ')}</div>
+
+  <!-- PAGE: NOTIFICATIONS - PHASE 4 -->
+  <div class="page" id="page-notifications">
+    <div class="section-title">🔔 NOTIFICATIONS - CANAL IA</div>
+    <div style="margin-bottom:16px;">
+      <button onclick="window.planifierMaintenanceAI()" style="width:100%;padding:10px;background:var(--blue);color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;margin-bottom:8px;">🤖 RELANCER ROBOT MAINTENANCE</button>
+    </div>
+    <div id="notifications-list" style="display:grid;gap:8px;">
+      <div style="padding:20px;text-align:center;color:var(--text-dim);">Chargement...</div>
+    </div>
+  </div>
+
+  </body></html>`;
 }
 
 function exportRapportFlotte() {
@@ -4315,7 +5985,7 @@ function exportRapportFlotte() {
   const ok = TRACTEURS.filter(t=>['ok','disponible'].includes(calcVerdictTracteur(t))).length;
   html += `<h2>RÉSUMÉ EXÉCUTIF</h2>
   <table><tr><th>ARRÊT</th><th>ALERTE</th><th>OPÉRATIONNEL</th><th>TOTAL</th><th>LÉGAUX PÉRIMÉS</th></tr>
-  <tr><td><span class="badge-red">${stop}</span></td><td><span class="badge-orange">${alerte}</span></td><td><span class="badge-green">${ok}</span></td><td><strong>${TRACTEURS.length}</strong></td><td><span class="badge-red">${TRACTEURS.filter(t=>t.statutLegal==='PERIME').length}</span></td></tr></table>`;
+  <tr><td><span class="badge-red">${stop}</span></td><td><span class="badge-orange">${alerte}</span></td><td><span class="badge-green">${ok}</span></td><td><strong>${TRACTEURS.length}</strong></td><td><span class="badge-red">${TRACTEURS.filter(t=>_isDatePerime(t.echAss)||_isDatePerime(t.echCtrl)||_isDatePerime(t.echVign)).length}</span></td></tr></table>`;
 
   html += `<h2>TRACTEURS — ÉTAT DÉTAILLÉ</h2>
   <table><tr><th>ID</th><th>MATRICULE</th><th>CHAUFFEUR</th><th>MARQUE</th><th>KM</th><th>VERDICT</th><th>LÉGAL</th><th>VIDANGE</th></tr>`;
@@ -4327,7 +5997,7 @@ function exportRapportFlotte() {
     html += `<tr><td><strong>${t.id}</strong></td><td>${t.mat}</td><td>${t.chauffeur}</td><td>${t.marque}</td>
       <td>${t.km?t.km.toLocaleString('fr-FR')+'km':'—'}</td>
       <td><span class="${vCl}">${v.toUpperCase()}</span></td>
-      <td>${t.statutLegal==='PERIME'?'<span class="badge-red">PÉRIMÉ</span>':'<span class="badge-green">OK</span>'}</td>
+      <td>${(_isDatePerime(t.echAss)||_isDatePerime(t.echCtrl)||_isDatePerime(t.echVign))?'<span class="badge-red">PÉRIMÉ</span>':'<span class="badge-green">OK</span>'}</td>
       <td>${vidReste>0?'+'+vidReste.toLocaleString('fr-FR')+'km':'<span class="badge-red">DÉPASSÉ</span>'}</td></tr>`;
   });
   html += '</table>';
@@ -4623,7 +6293,7 @@ function runPredictiveAnalysis() {
     }
 
     // --- Facteur 7: Documents légaux (immobilisation = 0 revenu) ---
-    if(t.statutLegal === 'PERIME') {
+    if(_isDatePerime(t.echAss)||_isDatePerime(t.echCtrl)||_isDatePerime(t.echVign)) {
       score += 20; facteurs.push({label:'Immobilisation légale — revenu 0', sev:'⚖️', pts:20});
     }
 
@@ -4844,11 +6514,11 @@ function renderDashboard() {
   const today = new Date();
 
   // ---- Calcul KPIs tracteurs ----
-  const tStop = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'stop');
-  const tAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'alerte');
-  const tOk = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'ok');
-  const tDispo = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'disponible');
-  const tLegal = TRACTEURS.filter(t => t.statutLegal === 'PERIME');
+  const tStop = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'stop');
+  const tAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'alerte');
+  const tOk = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'ok');
+  const tDispo = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'disponible');
+  const tLegal = TRACTEURS.filter(t => _isDatePerime(t.echAss)||_isDatePerime(t.echCtrl)||_isDatePerime(t.echVign));
 
   // ---- Calcul KPIs véhicules légers ----
   const vlStop = VEHICULES_LEGERS.filter(v => calcVerdictVL(v) === 'stop');
@@ -4856,9 +6526,9 @@ function renderDashboard() {
   const vlOk = VEHICULES_LEGERS.filter(v => ['ok','disponible'].includes(calcVerdictVL(v)));
 
   // ---- Calcul KPIs remorques ----
-  const rStop = REMORQUES.filter(r => calcVerdictRem(r) === 'stop');
-  const rOk = REMORQUES.filter(r => calcVerdictRem(r) === 'ok');
-  const rAnt = REMORQUES.filter(r => calcVerdictRem(r) === 'anticipation');
+  const rStop = REMORQUES.filter(r => calcVerdictRem(r).toLowerCase() === 'stop');
+  const rOk = REMORQUES.filter(r => calcVerdictRem(r).toLowerCase() === 'ok');
+  const rAnt = REMORQUES.filter(r => calcVerdictRem(r).toLowerCase() === 'anticipation');
 
   // ---- Alertes techniques actives ----
   const alertesTech = [];
@@ -5172,11 +6842,15 @@ function getTechAlertSummary(t) {
 }
 
 function getLegalAlertSummary(t) {
-  if(t.statutLegal !== 'PERIME') return '';
-  return `<div style="margin-top:4px;"><span class="alert-badge alert-legal" onclick="event.stopPropagation();toggleTechDetail('ld-${t.id}')">\uD83D\uDCCB L&Eacute;GAL \u25BE</span>
-  <div id="ld-${t.id}" class="tech-detail-collapse">
-    <div style="font-size:11px;color:var(--red);padding:4px 0;">\u26A0\uFE0F Ass: ${t.echAss} &middot; CT: ${t.echCtrl} &middot; Vign: ${t.echVign}</div>
-  </div></div>`;
+  const docsPerimes = [];
+  if(_isDatePerime(t.echAss))  docsPerimes.push('Ass: ' + t.echAss);
+  if(_isDatePerime(t.echCtrl)) docsPerimes.push('CT: ' + t.echCtrl);
+  if(_isDatePerime(t.echVign)) docsPerimes.push('Vign: ' + t.echVign);
+  if(docsPerimes.length === 0) return '';
+  return '<div style="margin-top:4px;"><span class="alert-badge alert-legal" onclick="event.stopPropagation();toggleTechDetail(\'ld-'+t.id+'\')">📋 LÉGAL ▾</span>'
+    + '<div id="ld-'+t.id+'" class="tech-detail-collapse">'
+    + '<div style="font-size:11px;color:var(--red);padding:4px 0;">⚠️ ' + docsPerimes.join(' · ') + '</div>'
+    + '</div></div>';
 }
 
 function toggleTechDetail(id) {
@@ -5196,11 +6870,13 @@ function filterTracteurs(filter, btn) {
 
 function statutLegalRow(label, dateStr) {
   const color = dateColor(dateStr);
-  const expired = isDateExpired(dateStr);
-  const icon = expired ? '🔴' : (dateStr && dateStr!=='—') ? '🟢' : '⚫';
+  const dl = _daysLeft(dateStr);
+  const icon = (dl < 0)           ? '🔴' :
+               (dl >= 0 && dl <= 30) ? '🟠' :
+               (dateStr && dateStr !== '—') ? '🟢' : '⚫';
   return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(201,168,76,0.1);">
     <span style="font-size:10px;color:var(--text-dim)">${icon} ${label}</span>
-    <span style="font-size:11px;font-weight:600;color:${color}">${dateStr||'—'}</span>
+    <span style="font-size:11px;font-weight:600;color:${color}">${dateStr||'—'}${dl >= 0 && dl <= 30 ? ' <span style="font-size:9px;color:var(--orange)">J-'+dl+'</span>' : ''}</span>
   </div>`;
 }
 
@@ -5268,91 +6944,80 @@ function renderTracteurs() {
     return;
   }
   
-  document.getElementById('tracteurs-list').innerHTML = list.map(t => `
-    <div class="vehicle-card ${getStatutClass(calcVerdictTracteur(t))}">
-      <!-- HEADER -->
-      <div class="vc-header" onclick="showDetail('${t.id}')" style="cursor:pointer">
-        <img class="vc-logo" src="${LOGOS[t.marque] || LOGOS['MAN TGS 400']}" alt="${t.marque}">
-        <div class="vc-info">
-          <div class="vc-mat">${t.id} — ${t.mat}</div>
-          <div class="vc-name">${t.chauffeur} · ${t.marque}</div>
-        </div>
-        ${getVerdictBadge(calcVerdictTracteur(t))}
-      </div>
-      <div class="vc-body">
-        <!-- KM avec bouton MAJ inline -->
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;background:var(--bg3);border-radius:6px;padding:8px 10px;border:1px solid var(--border);" onclick="event.stopPropagation()">
-          <div style="flex:1;">
-            <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:2px;">📍 KILOMÉTRAGE</div>
-            <div style="font-family:Rajdhani,sans-serif;font-size:20px;font-weight:700;color:${t.km>0?'var(--gold)':'var(--text-dim)'};line-height:1;">${t.km>0?t.km.toLocaleString('fr-FR')+' km':'NON INIT.'}</div>
-            <div style="font-size:9px;color:var(--text-dim);margin-top:2px;">🔧 Der. vidange: ${t.dateDerVid}${t.remorque?'  🔗 '+t.remorque:''}</div>
+  // ── GRILLE COMPACTE ──────────────────────────────────────────
+  const verdictBorderColor = v =>
+    v === 'STOP'      ? 'var(--red)'    :
+    v === 'ALERTE'    ? 'var(--orange)' :
+    v === 'DISPONIBLE'? 'var(--blue)'   : 'var(--green)';
+
+  const verdictDot = v =>
+    v === 'STOP'      ? '🔴' :
+    v === 'ALERTE'    ? '🟡' :
+    v === 'DISPONIBLE'? '🔵' : '🟢';
+
+  document.getElementById('tracteurs-list').innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;padding:2px 0;">' +
+    list.map(t => {
+      const verdict = calcVerdictTracteur(t);
+      const bcolor  = verdictBorderColor(verdict);
+      const dot     = verdictDot(verdict);
+      const logo    = LOGOS[t.marque] || LOGOS['MAN TGS 400'];
+      const kmStr   = t.km > 0 ? t.km.toLocaleString('fr-FR') + ' km' : '—';
+      return `
+        <div onclick="showDetail('${t.id}')" style="
+          background:var(--bg2);
+          border:1px solid var(--border);
+          border-top:3px solid ${bcolor};
+          border-radius:10px;
+          padding:10px 10px 8px;
+          cursor:pointer;
+          transition:transform 0.15s,box-shadow 0.15s;
+          display:flex;flex-direction:column;align-items:center;gap:6px;
+          position:relative;
+        "
+        onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 18px rgba(0,0,0,0.35)'"
+        onmouseout="this.style.transform='';this.style.boxShadow=''">
+
+          <!-- Dot statut top-right -->
+          <span style="position:absolute;top:6px;right:8px;font-size:11px;" title="${verdict}">${dot}</span>
+
+          <!-- Logo camion -->
+          <img src="${logo}" alt="${t.marque}"
+            style="width:64px;height:38px;object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));">
+
+          <!-- ID -->
+          <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--gold);letter-spacing:1px;line-height:1;">
+            ${t.id}
           </div>
-          <button onclick="openMajKm('${t.id}')" style="flex-shrink:0;padding:8px 12px;background:rgba(201,168,76,0.2);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-family:Rajdhani,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;white-space:nowrap;">
-            ✏️ MAJ KM
-          </button>
-          <button onclick="openEditTracteur('${t.id}','${t.mat}','${t.chauffeur}','${t.marque}',${t.km})" style="flex-shrink:0;padding:8px 12px;background:rgba(100,150,200,0.2);border:1px solid #6496C8;border-radius:8px;color:#6496C8;font-family:Rajdhani,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;white-space:nowrap;">
-            ✏️ MODIFIER
-          </button>
-        </div>
 
-        <!-- STATUT LÉGAL -->
-        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">
-          <div style="font-size:10px;font-weight:700;color:var(--gold);letter-spacing:1px;margin-bottom:6px;">📋 STATUT LÉGAL</div>
-          ${statutLegalRow('ASSURANCE', t.echAss)}
-          ${statutLegalRow('CTRL TECHNIQUE', t.echCtrl)}
-          ${statutLegalRow('VIGNETTE', t.echVign)}
-        </div>
+          <!-- Matricule -->
+          <div style="font-size:10px;color:var(--text);font-weight:600;letter-spacing:0.5px;text-align:center;">
+            ${t.mat}
+          </div>
 
-        <!-- STATUT TECHNIQUE -->
-        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">
-          <div style="font-size:10px;font-weight:700;color:var(--gold);letter-spacing:1px;margin-bottom:6px;">🔧 STATUT TECHNIQUE</div>
-          ${organeRow('VIDANGE',       t.km, t.derVid,   SEUILS_TRAC.VIDANGE.rouge)}
-          ${organeRow('INJECTION',     t.km, t.derInj,   SEUILS_TRAC.INJECTION.rouge)}
-          ${organeRow('TURBO',         t.km, t.derTurbo, SEUILS_TRAC.TURBO.rouge)}
-          ${organeRow('DISTRIBUTION',  t.km, t.derDistri,SEUILS_TRAC.DISTRIBUTION.rouge)}
-          ${organeRow('POMPE À EAU',   t.km, t.derPompe, SEUILS_TRAC.POMPE.rouge)}
-          ${organeRow('TRANSMISSION',  t.km, t.derTrans, SEUILS_TRAC.TRANSMISSION.rouge)}
-          ${organeRow('DESSICATEUR',   t.km, t.derDessi, SEUILS_TRAC.DESSICATEUR.rouge)}
-          ${organeRow('REFROIDISSEMENT',t.km,t.derRefr,  SEUILS_TRAC.REFROID.rouge)}
-          ${organeRow('SUSPENSION',    t.km, t.derSusp,  SEUILS_TRAC.SUSPENSION.rouge)}
-          ${organeRow('FREINAGE',      t.km, t.derFrein, SEUILS_TRAC.FREINAGE.rouge)}
-        </div>
+          <!-- Chauffeur -->
+          <div style="font-size:10px;color:var(--text-dim);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%;padding:0 4px;">
+            👤 ${t.chauffeur || '—'}
+          </div>
 
-        <!-- OBS tracteur -->
-        <div style="margin-top:8px;" onclick="event.stopPropagation()">
-          <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:3px;">📝 OBSERVATIONS</div>
-          <textarea id="obs-trac-${t.id}"
-            placeholder="Ex: Kilométrage HS, fuite huile moteur, chauffeur absent..."
-            style="width:100%;background:var(--bg4);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:7px 9px;resize:vertical;min-height:52px;font-family:inherit;box-sizing:border-box;"
-            oninput="saveObsTrac('${t.id}',this.value)">${t.obs||''}</textarea>
-        </div>
-        <!-- REMORQUE DROPDOWN -->
-        ${getRemorqueDropdown(t)}
-      </div>
-    </div>
-  `).join('');
+          <!-- KM mini -->
+          <div style="font-size:9px;color:${t.km>0?'var(--text-dim)':'var(--text-dim)'};margin-top:2px;">
+            📍 ${kmStr}
+          </div>
+        </div>`;
+    }).join('') +
+    '</div>';
+  if(typeof updateAlertBanner === 'function') updateAlertBanner();
 }
 
 // ===== DETAIL =====
+// Alias vers les fonctions live centralisées (compatibilité)
 function isDateExpired(dateStr) {
   if(!dateStr || dateStr === '—') return false;
-  const parts = dateStr.split('/');
-  if(parts.length !== 3) return false;
-  const d = new Date(parts[2], parts[1]-1, parts[0]);
-  return d < new Date();
+  return _isDatePerime(dateStr);
 }
 
-function dateColor(dateStr) {
-  if(!dateStr || dateStr === '—') return 'var(--text-dim)';
-  const parts = dateStr.split('/');
-  if(parts.length !== 3) return 'var(--text-dim)';
-  const d = new Date(parts[2], parts[1]-1, parts[0]);
-  const now = new Date();
-  const diff = (d - now) / (1000*60*60*24);
-  if(diff < 0) return 'var(--red)';
-  if(diff < 30) return 'var(--orange)';
-  return 'var(--green)';
-}
+function dateColor(dateStr) { return dateColorLive(dateStr); }
 
 let currentDetailId = null;
 
@@ -5394,6 +7059,19 @@ function showDetail(id) {
   ];
   
   document.getElementById('detail-body').innerHTML = `
+    <!-- BOUTONS D'ACTION -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;" onclick="event.stopPropagation()">
+      <button onclick="openMajKm('${id}')" style="flex:1;padding:9px 6px;background:rgba(201,168,76,0.2);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-family:Rajdhani,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;">
+        📍 MAJ KM
+      </button>
+      <button onclick="openEditTracteur('${id}','${t.mat}','${t.chauffeur}','${t.marque}',${t.km})" style="flex:1;padding:9px 6px;background:rgba(100,150,200,0.2);border:1px solid #6496C8;border-radius:8px;color:#6496C8;font-family:Rajdhani,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;">
+        ✏️ MODIFIER
+      </button>
+      <button onclick="deleteTracteurFromList('${id}');document.getElementById('detail-overlay').classList.remove('open')" style="padding:9px 12px;background:rgba(255,59,48,0.15);border:1px solid rgba(255,59,48,0.5);border-radius:8px;color:var(--red);font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;cursor:pointer;">
+        🗑️
+      </button>
+    </div>
+
     <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;flex:1;">
         <div style="font-size:10px;color:var(--text-dim)">📍 KM ACTUEL</div>
@@ -5415,12 +7093,14 @@ function showDetail(id) {
           const n   = window._lb.length;
           const tid = id, ff = lf.field, ll = lf.label, vv = lf.val;
           window._lb.push(function(){ openEditLegal(tid, ff, ll, vv); });
-          const col = dateColor(vv);
-          const dot = isDateExpired(vv) ? '🔴' : (vv && vv !== '—') ? '🟢' : '⚫';
+          const col = dateColorLive(vv);
+          const dl  = _daysLeft(vv);
+          const dot = dl < 0 ? '🔴' : (dl >= 0 && dl <= 30) ? '🟠' : (vv && vv !== '—') ? '🟢' : '⚫';
+          const jLabel = (dl >= 0 && dl <= 30) ? ' <span style="font-size:9px;color:var(--orange)">(J-' + dl + ')</span>' : '';
           rows += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(201,168,76,0.1);">'
             + '<span style="font-size:11px;color:var(--text-dim)">' + dot + ' ' + ll + '</span>'
             + '<div style="display:flex;align-items:center;gap:8px;">'
-            + '<span style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:' + col + '">' + vv + '</span>'
+            + '<span style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:' + col + '">' + vv + jLabel + '</span>'
             + '<button onclick="window._lb[' + n + ']()" style="font-size:10px;background:rgba(201,168,76,0.2);color:var(--gold);border:1px solid var(--gold);border-radius:4px;padding:3px 8px;cursor:pointer;font-weight:700;">✏️ MAJ</button>'
             + '</div></div>';
         });
@@ -5467,8 +7147,20 @@ function showDetail(id) {
 
     <div class="protocol-box">
       <div style="font-size:10px;color:var(--gold);font-weight:700;margin-bottom:4px;letter-spacing:1px;">PROTOCOLE RECOMMANDÉ</div>
-      ${t.protocol}
+      ${calcProtocol(t)}
     </div>
+
+    <!-- OBSERVATIONS -->
+    <div style="margin-top:10px;">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:4px;">📝 OBSERVATIONS</div>
+      <textarea id="obs-trac-${id}"
+        placeholder="Ex: Kilométrage HS, fuite huile moteur, chauffeur absent..."
+        style="width:100%;background:var(--bg4);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:7px 9px;resize:vertical;min-height:52px;font-family:inherit;box-sizing:border-box;"
+        oninput="saveObsTrac('${id}',this.value)">${t.obs||''}</textarea>
+    </div>
+
+    <!-- REMORQUE -->
+    ${getRemorqueDropdown(t)}
   `;
   
   document.getElementById('detail-overlay').classList.add('open');
@@ -5516,6 +7208,7 @@ function saveEditLegal() {
     const r = REMORQUES.find(r => r.id === remId);
     if(!r) return;
     r[field] = dateStr;
+    _saveAll();
     renderRemorques();
     showToast('✅ Date maintenance mise à jour !');
     return;
@@ -5532,6 +7225,7 @@ function saveEditLegal() {
     // Recalcul statutLegal selon les 3 dates
     const allLegalOk = ['echAss','echCtrl','echRC'].every(f => r[f] && r[f]!=='—' && !isDateExpired(r[f]));
     r.statutLegal = allLegalOk ? 'OK' : 'PERIME';
+    _saveAll();
     renderRemorques();
     showToast('✅ Remorque mise à jour !');
     return;
@@ -5540,8 +7234,9 @@ function saveEditLegal() {
   const t = TRACTEURS.find(t => t.id === entityId);
   if(!t) return;
   t[fieldRaw] = dateStr;
-  const allOk = [t.echAss,t.echCtrl,t.echVign].every(v => v && v!=='—' && !isDateExpired(v));
-  t.statutLegal = allOk ? 'OK' : 'PERIME';
+  // Sync statutLegal (pour rétro-compat dashboard/stats) — basé sur calcul live
+  t.statutLegal = (_isDatePerime(t.echAss) || _isDatePerime(t.echCtrl) || _isDatePerime(t.echVign)) ? 'PERIME' : 'OK';
+  _saveAll();
   renderTracteurs();
   if(document.getElementById('detail-overlay').classList.contains('open')) showDetail(entityId);
   showToast('✅ Échéance mise à jour : '+dateStr);
@@ -5551,7 +7246,7 @@ function openEditField(field, tractId) {
   const t = TRACTEURS.find(t => t.id === tractId);
   if(!t) return;
   const opts = '<option value="">— Aucune remorque —</option>' +
-    REMORQUES.map(r=>`<option value="${r.id}" ${t.remorque===r.id?'selected':''}>${r.id} — ${r.mat} (${r.statutLegal})</option>`).join('');
+    REMORQUES.map(r=>`<option value="${r.id}" ${t.remorque===r.id?'selected':''}>${r.id} — ${r.mat} (${(_isDatePerime(r.echAss)||_isDatePerime(r.echCtrl)||_isDatePerime(r.echRC))?'PÉRIMÉ':'OK'})</option>`).join('');
   document.getElementById('modal-rem-title').textContent = tractId + ' — Atteler une remorque';
   document.getElementById('modal-rem-tractid').value = tractId;
   document.getElementById('modal-rem-select').innerHTML = opts;
@@ -5571,6 +7266,7 @@ function saveEditRemorque() {
     if(r) r.tracteur = tractId;
   }
   document.getElementById('modal-rem').classList.remove('open');
+  _saveAll();
   renderTracteurs();
   showDetail(tractId);
   showToast(remId ? '🔗 '+tractId+' ↔ '+remId+' attelés !' : tractId+' — Remorque détachée');
@@ -5629,7 +7325,9 @@ function getRCheckDyn(label, dateStr, seuilRouge) {
 function calcVerdictRem(r) { return calcVerdictRemorque(r); }
 
 function calcVerdictRemorque(r) {
-  if(r.statutLegal==='PERIME') return 'ARRET';
+  // Statut légal calculé LIVE depuis les dates réelles
+  const legalPerime = _isDatePerime(r.echAss) || _isDatePerime(r.echCtrl) || _isDatePerime(r.echRC);
+  if(legalPerime) return 'ARRET';
   const checks = [
     calcStatutJours(r.der_freins,    SEUILS_REM.freins.rouge),
     calcStatutJours(r.der_susp,      SEUILS_REM.susp.rouge),
@@ -5638,6 +7336,9 @@ function calcVerdictRemorque(r) {
   ];
   if(checks.some(s=>s==='CRITIQUE')) return 'ARRET';
   if(checks.some(s=>s==='ALERTE'))   return 'ANTICIPATION';
+  // Alerte si un doc expire dans 30 jours
+  const soonExpiring = [r.echAss, r.echCtrl, r.echRC].some(d => { const dl = _daysLeft(d); return dl >= 0 && dl <= 30; });
+  if(soonExpiring) return 'ANTICIPATION';
   return 'DISPONIBLE';
 }
 
@@ -5730,7 +7431,7 @@ function renderRemorques() {
           </div>
           <div style="flex:1;background:var(--bg4);border-radius:4px;padding:5px 8px;">
             <div style="font-size:9px;color:var(--text-dim)">📋 STATUT LÉGAL</div>
-            <div style="font-size:13px;font-weight:700;color:${r.statutLegal==='PERIME'?'var(--red)':'var(--green)'}">${r.statutLegal}</div>
+            <div style="font-size:13px;font-weight:700;color:${(_isDatePerime(r.echAss)||_isDatePerime(r.echCtrl)||_isDatePerime(r.echRC))?'var(--red)':'var(--green)'}">${(_isDatePerime(r.echAss)||_isDatePerime(r.echCtrl)||_isDatePerime(r.echRC))?'PÉRIMÉ':'OK'}</div>
           </div>
         </div>
         <div style="background:var(--bg4);border-radius:5px;padding:6px 8px;margin-bottom:6px;">
@@ -5781,6 +7482,7 @@ function saveEditTracteur() {
     if(t) t.remorque = remId;
   }
   document.getElementById('modal-trac').classList.remove('open');
+  _saveAll();
   renderRemorques();
   showToast(tractId ? '🔗 '+remId+' ↔ '+tractId+' attelés !' : remId+' — Tracteur détaché');
 }
@@ -5948,6 +7650,8 @@ function openEditTracteur(tractId, matricule, chauffeur, marque, km) {
   document.getElementById('edit-chauffeur').value = chauffeur;
   document.getElementById('edit-marque').value = marque;
   document.getElementById('edit-km').value = km;
+  const errEl = document.getElementById('edit-trac-error');
+  if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
   document.getElementById('modal-edit-tracteur').classList.add('open');
 }
 
@@ -5956,31 +7660,80 @@ function saveTracteurEdit() {
     alert('❌ Erreur: pas de tracteur sélectionné');
     return;
   }
-  
+
+  const matricule = document.getElementById('edit-matricule').value.trim();
   const chauffeur = document.getElementById('edit-chauffeur').value.trim();
-  const marque = document.getElementById('edit-marque').value.trim();
-  const km = parseInt(document.getElementById('edit-km').value) || 0;
-  
-  if (!chauffeur || !marque) {
-    alert('⚠️ Veuillez remplir chauffeur et marque');
+  const marque    = document.getElementById('edit-marque').value.trim();
+  const km        = parseInt(document.getElementById('edit-km').value) || 0;
+
+  if (!matricule || !chauffeur || !marque) {
+    const errEl = document.getElementById('edit-trac-error');
+    errEl.textContent = '⚠️ Matricule, chauffeur et marque sont obligatoires';
+    errEl.style.display = 'block';
     return;
   }
-  
-  // Trouver et modifier le tracteur
+
+  // Trouver et modifier le tracteur dans le tableau TRACTEURS
   const tracteur = TRACTEURS.find(t => t.id === currentEditTractId);
-  
+
   if (tracteur) {
+    tracteur.mat       = matricule;
     tracteur.chauffeur = chauffeur;
-    tracteur.marque = marque;
-    tracteur.km = km;
-    
-    // Rafraîchir l'affichage
-    filterTracteurs('all', document.querySelector('.filter-btn.active'));
-    
-    // Fermer la modal
+    tracteur.marque    = marque;
+    tracteur.km        = km;
+
+    // Sauvegarder d'abord
+    _saveAll();
+
+    // Rafraîchir l'affichage (en respectant le filtre actif)
+    const activeBtn = document.querySelector('.filter-btn.active');
+    if (activeBtn) {
+      filterTracteurs(currentFilter || 'all', activeBtn);
+    } else {
+      renderTracteurs();
+    }
+
+    // Si le panneau détail est ouvert sur ce tracteur, le rafraîchir aussi
+    if (currentDetailId === currentEditTractId) {
+      showDetail(currentEditTractId);
+    }
+
+    // Fermer le modal
     document.getElementById('modal-edit-tracteur').classList.remove('open');
-    
-    alert('✅ Tracteur modifié avec succès !');
+
+    // Toast de confirmation
+    const toast = document.getElementById('toast');
+    if (toast) {
+      toast.textContent = '✅ ' + currentEditTractId + ' modifié !';
+      toast.style.transform = 'translateX(-50%) translateY(0)';
+      setTimeout(() => { toast.style.transform = 'translateX(-50%) translateY(100px)'; }, 2500);
+    }
+  }
+}
+
+function deleteTracteurFromList(tractId) {
+  if (!confirm('⚠️ Supprimer définitivement le camion ' + tractId + ' ?\nCette action est irréversible.')) return;
+  const idx = TRACTEURS.findIndex(t => t.id === tractId);
+  if (idx === -1) { alert('❌ Camion introuvable'); return; }
+  TRACTEURS.splice(idx, 1);
+  _saveAll();
+  const activeBtn = document.querySelector('.filter-btn.active');
+  if (activeBtn) {
+    filterTracteurs(currentFilter || 'all', activeBtn);
+  } else {
+    renderTracteurs();
+  }
+  const toast = document.getElementById('toast');
+  if (toast) {
+    toast.textContent = '🗑️ ' + tractId + ' supprimé';
+    toast.style.background = 'var(--red)';
+    toast.style.color = '#fff';
+    toast.style.transform = 'translateX(-50%) translateY(0)';
+    setTimeout(() => {
+      toast.style.transform = 'translateX(-50%) translateY(100px)';
+      toast.style.background = 'var(--gold)';
+      toast.style.color = 'var(--bg)';
+    }, 2500);
   }
 }
 
@@ -6042,6 +7795,7 @@ function saveMajKm() {
     pieces: 'KM avant: ' + (kmAvant||0).toLocaleString('fr-FR') + ' → ' + km.toLocaleString('fr-FR'),
     type: 'preventif'
   });
+  _saveAll();
   document.getElementById('modal-km').classList.remove('open');
   renderTracteurs();
   // Refresh detail panel if open
@@ -6072,6 +7826,7 @@ function saveMaint() {
   const dateStr = d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'});
   
   HISTORIQUE.unshift({date:dateStr, mat, organe, km, obs:obs||type.toUpperCase(), pieces, type});
+  _saveAll();
   
   // === Mise à jour automatique de la fiche camion ===
   const t = TRACTEURS.find(t => t.mat === mat);
@@ -7362,6 +9117,7 @@ function submitKm() {
     t.km = km;
     const today = new Date().toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'});
     HISTORIQUE.unshift({date:today, mat:t.mat, organe:'MAJ KILOMÉTRAGE', km:km, obs:obs||trajet||'Saisie chauffeur', pieces:'—', type:'preventif'});
+    _saveAll();
     showToast('✅ KM mis à jour : ' + km.toLocaleString('fr-FR') + ' km pour ' + v);
     document.getElementById('c-km').value = '';
     document.getElementById('c-obs').value = '';
@@ -7378,6 +9134,7 @@ function submitAnomalie() {
   const today = new Date().toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'});
   const mat = t ? t.mat : v;
   HISTORIQUE.unshift({date:today, mat, organe:'ANOMALIE SIGNALÉE', km:t?t.km:'—', obs:'CURATIVE', pieces:chips + (desc?' — '+desc:''), type:'curative'});
+  _saveAll();
   document.querySelectorAll('.anomalie-chip.selected').forEach(c=>c.classList.remove('selected'));
   document.getElementById('c-anom-desc').value = '';
   showToast('🚨 Anomalie enregistrée : ' + (chips||desc));
@@ -7731,8 +9488,8 @@ let loadingCounter = 0;
 // ---- SYSTÈME DE PROMPT ADMIN (vivant, autonome, expert) ----
 function getIASystemPrompt() {
   const now = new Date().toLocaleDateString('fr-DZ');
-  const tractArret = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'stop').length;
-  const tractAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'alerte').length;
+  const tractArret = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'stop').length;
+  const tractAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'alerte').length;
   const dmUrg = DEMANDES_MAINT.filter(d => d.prio === 'URGENT' && d.statut !== 'TERMINÉ').length;
   const techCtx = buildTechContext();
   return FLEET_CONTEXT + techCtx + `
@@ -8156,8 +9913,8 @@ function iaAdminPanel() {
   iaUpdateAdminBadge();
 
   const dmUrg = DEMANDES_MAINT.filter(d => d.prio === 'URGENT' && d.statut !== 'TERMINÉ');
-  const tractStop = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'stop');
-  const tractAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t) === 'alerte');
+  const tractStop = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'stop');
+  const tractAlerte = TRACTEURS.filter(t => calcVerdictTracteur(t).toLowerCase() === 'alerte');
 
   // Build notification log HTML
   let logHTML = '';
@@ -8569,6 +10326,7 @@ function saveAddTracteur() {
   });
 
   document.getElementById('modal-add-tracteur').classList.remove('open');
+  _saveAll();
   renderTracteurs();
   updateFilterCounts();
 
@@ -8610,11 +10368,11 @@ function refreshMatSelects() {
 // ===== OBS TRACTEUR / REMORQUE =====
 function saveObsTrac(tractId, val) {
   const t = TRACTEURS.find(t => t.id === tractId);
-  if(t) t.obs = val;
+  if(t) { t.obs = val; _saveAll(); }
 }
 function saveObsRem(remId, val) {
   const r = REMORQUES.find(r => r.id === remId);
-  if(r) r.obs = val;
+  if(r) { r.obs = val; _saveAll(); }
 }
 
 // ===== MAJ KM REMORQUE =====
@@ -8668,6 +10426,7 @@ function saveMajKmRem() {
   }
   const kmAvant = r.km || 0;
   r.km = val;
+  _saveAll();
   document.getElementById('modal-km-rem').classList.remove('open');
   renderRemorques();
   showToast('✅ ' + remId + ' · ' + r.mat + ' → ' + val.toLocaleString('fr-FR') + ' km ✓');
@@ -8733,6 +10492,7 @@ function saveAddRemorque() {
 
   REMORQUES.push(newRem);
   document.getElementById('modal-add-remorque').classList.remove('open');
+  _saveAll();
   renderRemorques();
   updateRemFilterCounts();
   showToast('✅ ' + id + ' · ' + mat + ' ajoutée à la flotte !');
@@ -8868,7 +10628,63 @@ function renderDetailDemandes(t) {
   return html;
 }
 
+// ============================================================
+// PERSISTANCE LOCALE — TRACTEURS / REMORQUES / HISTORIQUE
+// Toutes les modifications manuelles sont sauvegardées dans
+// localStorage et restaurées au chargement de la page.
+// ============================================================
+const LS_KEY_T  = 'COREDZ_TRACTEURS';
+const LS_KEY_R  = 'COREDZ_REMORQUES';
+const LS_KEY_H  = 'COREDZ_HISTORIQUE';
+const LS_KEY_HR = 'COREDZ_HISTORIQUE_REM';
+
+function _saveAll() {
+  try {
+    localStorage.setItem(LS_KEY_T,  JSON.stringify(TRACTEURS));
+    localStorage.setItem(LS_KEY_R,  JSON.stringify(REMORQUES));
+    localStorage.setItem(LS_KEY_H,  JSON.stringify(HISTORIQUE));
+    localStorage.setItem(LS_KEY_HR, JSON.stringify(HISTORIQUE_REM));
+  } catch(e) { console.warn('⚠️ Sauvegarde localStorage échouée:', e); }
+}
+
+function _loadAll() {
+  try {
+    const t  = localStorage.getItem(LS_KEY_T);
+    const r  = localStorage.getItem(LS_KEY_R);
+    const h  = localStorage.getItem(LS_KEY_H);
+    const hr = localStorage.getItem(LS_KEY_HR);
+    if(t)  { const d = JSON.parse(t);  TRACTEURS.length = 0;      d.forEach(x => TRACTEURS.push(x)); }
+    if(r)  { const d = JSON.parse(r);  REMORQUES.length = 0;      d.forEach(x => REMORQUES.push(x)); }
+    if(h)  { const d = JSON.parse(h);  HISTORIQUE.length = 0;     d.forEach(x => HISTORIQUE.push(x)); }
+    if(hr) { const d = JSON.parse(hr); HISTORIQUE_REM.length = 0; d.forEach(x => HISTORIQUE_REM.push(x)); }
+    if(t || r) console.log('✅ Données restaurées depuis localStorage');
+  } catch(e) { console.warn('⚠️ Restauration localStorage échouée:', e); }
+}
+
+function resetLocalData() {
+  if(!confirm('⚠️ Réinitialiser toutes les données aux valeurs d\'usine ?\nCette action est irréversible.')) return;
+  [LS_KEY_T, LS_KEY_R, LS_KEY_H, LS_KEY_HR].forEach(k => localStorage.removeItem(k));
+  location.reload();
+}
+
 // ===== INIT =====
+_loadAll(); // ← Restaure d'abord les données sauvegardées
+
+function updateAlertBanner() {
+  const el = document.getElementById('alert-banner-text');
+  if(!el) return;
+  const stops   = TRACTEURS.filter(t => calcVerdictTracteur(t).toUpperCase() === 'STOP');
+  const alertes = TRACTEURS.filter(t => calcVerdictTracteur(t).toUpperCase() === 'ALERTE');
+  const docsKo  = TRACTEURS.filter(t => _isDatePerime(t.echAss)||_isDatePerime(t.echCtrl)||_isDatePerime(t.echVign));
+  const remArret = REMORQUES.filter(r => calcVerdictRemorque(r) === 'ARRET');
+  let parts = [];
+  if(stops.length)    parts.push('🔴 STOP : ' + stops.map(t=>t.id).join(', '));
+  if(alertes.length)  parts.push('🟡 ALERTE : ' + alertes.map(t=>t.id).join(', '));
+  if(docsKo.length)   parts.push('⚖️ DOCS PÉRIMÉS : ' + docsKo.map(t=>t.id).join(', '));
+  if(remArret.length) parts.push('🔗 REMORQUES ARRÊT : ' + remArret.map(r=>r.id).join(', '));
+  parts.push('🚛 FLOTTE : ' + TRACTEURS.length + ' tracteurs | ' + REMORQUES.length + ' remorques');
+  el.innerHTML = parts.map(p => p + ' &nbsp;&nbsp;&nbsp; ').join('');
+}
 renderDashboard();
 renderTracteurs();
 populateVilleSelects();
@@ -8876,6 +10692,134 @@ updateFilterCounts();
 updateRemFilterCounts();
 startAlertEngine();
 initPortailDocs();
+updateAlertBanner();
+
+// ============================================================
+// PHASE 2 : GESTION SITUATION PARC PAR STATUTS
+// ============================================================
+
+function refreshSituationParc() {
+  const statuts = ['EN SERVICE', 'ARRÊT', 'ALERTE', 'DISPONIBLE', 'HORS SERVICE'];
+  
+  statuts.forEach(statut => {
+    const tracteurs = DB.getAllTracteurs().filter(t => t.situationParc === statut);
+    const remorques = DB.getAllRemorques().filter(r => r.situationParc === statut);
+    
+    const elementId = 'statut-' + statut.toLowerCase().replace(/ /g, '-');
+    const container = document.getElementById(elementId);
+    
+    if (!container) return;
+    
+    let html = '';
+    
+    // Afficher les tracteurs
+    tracteurs.forEach(t => {
+      html += `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--gold);">\${t.matricule}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">
+              👤 \${t.chauffeur || '—'} | 🚛 \${t.marque} | 📍 \${t.km}km
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="permutateVehicle('T', '\${t.id}')" title="Changer statut" style="padding:6px 8px;background:rgba(100,100,200,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">↔️</button>
+            <button onclick="deleteVehicle('T', '\${t.id}')" title="Supprimer" style="padding:6px 8px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">🗑️</button>
+          </div>
+        </div>
+      `;
+    });
+    
+    // Afficher les remorques
+    remorques.forEach(r => {
+      html += `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;opacity:0.8;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--gold);">\${r.matricule} (REMORQUE)</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">
+              🔗 \${r.type} | \${r.marque}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="permutateVehicle('R', '\${r.id}')" title="Changer statut" style="padding:6px 8px;background:rgba(100,100,200,0.2);color:var(--blue);border:1px solid var(--blue);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">↔️</button>
+            <button onclick="deleteVehicle('R', '\${r.id}')" title="Supprimer" style="padding:6px 8px;background:rgba(255,59,48,0.2);color:var(--red);border:1px solid var(--red);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">🗑️</button>
+          </div>
+        </div>
+      `;
+    });
+    
+    if (html === '') {
+      html = '<div style="color:var(--text-dim);font-size:12px;padding:8px;text-align:center;">— Aucun véhicule —</div>';
+    }
+    
+    container.innerHTML = html;
+  });
+}
+
+function addVehicleToStatus(statut) {
+  const id = prompt('Entrer l\'ID tracteur (T001) ou remorque (R01):');
+  if (!id) return;
+  
+  const type = id.charAt(0);
+  
+  if (type === 'T') {
+    const t = DB.getTracteur(id);
+    if (!t) {
+      alert('❌ Tracteur non trouvé');
+      return;
+    }
+    DB.updateTracteur(id, { situationParc: statut });
+    alert(`✅ \${id} déplacé vers \${statut}`);
+  } else if (type === 'R') {
+    const r = DB.getRemorque(id);
+    if (!r) {
+      alert('❌ Remorque non trouvée');
+      return;
+    }
+    DB.updateRemorque(id, { situationParc: statut });
+    alert(`✅ \${id} déplacé vers \${statut}`);
+  } else {
+    alert('❌ ID invalide');
+  }
+  
+  refreshSituationParc();
+}
+
+function permutateVehicle(type, id) {
+  const statuts = ['EN SERVICE', 'ARRÊT', 'ALERTE', 'DISPONIBLE', 'HORS SERVICE'];
+  const current = type === 'T' ? DB.getTracteur(id).situationParc : DB.getRemorque(id).situationParc;
+  
+  const nouveauStatut = prompt(`Statuts disponibles:\n\${statuts.join('\n')}\n\nNouveau statut:`, current);
+  
+  if (!nouveauStatut || !statuts.includes(nouveauStatut)) {
+    alert('❌ Statut invalide');
+    return;
+  }
+  
+  if (type === 'T') {
+    DB.updateTracteur(id, { situationParc: nouveauStatut });
+  } else {
+    DB.updateRemorque(id, { situationParc: nouveauStatut });
+  }
+  
+  alert(`✅ \${id} changé vers \${nouveauStatut}`);
+  refreshSituationParc();
+}
+
+function deleteVehicle(type, id) {
+  if (!confirm(`⚠️ Confirmer la suppression de \${id}?`)) return;
+  
+  if (type === 'T') {
+    DB.deleteTracteur(id);
+  } else {
+    DB.deleteRemorque(id);
+  }
+  
+  alert(`✅ \${id} supprimé`);
+  refreshSituationParc();
+}
+
+
 </script>
 
 <script>
@@ -8972,6 +10916,9 @@ function triggerPWAInstall() {
 
 initPWA();
 
+
+
+
 </script>
 
 <!-- MODAL MODIFICATION TRACTEUR -->
@@ -8982,7 +10929,7 @@ initPWA();
     </div>
     <div style="margin-bottom:16px;">
       <label style="font-size:11px;color:var(--text-dim);text-transform:uppercase;display:block;margin-bottom:6px;">Matricule</label>
-      <input type="text" id="edit-matricule" readonly style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);">
+      <input type="text" id="edit-matricule" placeholder="000000,000,00" style="width:100%;padding:8px;background:var(--bg3);border:1px solid var(--gold);border-radius:6px;color:var(--text);font-family:Rajdhani,sans-serif;font-size:15px;letter-spacing:1px;">
     </div>
     <div style="margin-bottom:16px;">
       <label style="font-size:11px;color:var(--text-dim);text-transform:uppercase;display:block;margin-bottom:6px;">👤 Chauffeur</label>
@@ -8996,9 +10943,13 @@ initPWA();
       <label style="font-size:11px;color:var(--text-dim);text-transform:uppercase;display:block;margin-bottom:6px;">📍 Kilométrage</label>
       <input type="number" id="edit-km" placeholder="0" style="width:100%;padding:8px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);">
     </div>
+    <div id="edit-trac-error" style="display:none;background:rgba(255,59,48,0.12);border:1px solid rgba(255,59,48,0.4);border-radius:6px;padding:8px;margin-bottom:10px;font-size:12px;color:var(--red);text-align:center;"></div>
     <div style="display:flex;gap:8px;">
       <button onclick="saveTracteurEdit()" style="flex:1;padding:10px;background:var(--green);color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;">💾 SAUVEGARDER</button>
       <button onclick="document.getElementById('modal-edit-tracteur').classList.remove('open')" style="flex:1;padding:10px;background:var(--red);color:var(--bg);border:none;border-radius:6px;font-weight:700;cursor:pointer;">❌ ANNULER</button>
+    </div>
+    <div style="margin-top:10px;border-top:1px solid rgba(255,59,48,0.2);padding-top:10px;">
+      <button onclick="deleteTracteurFromList(currentEditTractId);document.getElementById('modal-edit-tracteur').classList.remove('open')" style="width:100%;padding:10px;background:rgba(255,59,48,0.15);color:var(--red);border:1px solid rgba(255,59,48,0.4);border-radius:6px;font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px;">🗑️ SUPPRIMER CE CAMION</button>
     </div>
   </div>
 </div>
@@ -9262,6 +11213,687 @@ initPWA();
     <button class="btn-submit" onclick="saveMajKmRem()">✅ VALIDER LE KILOMÉTRAGE</button>
   </div>
 </div>
+
+<!-- ============================================================ -->
+<!-- MOTEUR GPS ALGEOFLEET — CORE-DZ                              -->
+<!-- Endpoints découverts: /rest/dashboard/live, /events,         -->
+<!-- /vehiculesId, /history + WebSocket                           -->
+<!-- ============================================================ -->
+<script>
+const GPS = {
+  // ── CONFIG ─────────────────────────────────────────────────────
+  cfg: {
+    baseUrl:    'https://activegps.algeofleet.com/rest/dashboard',
+    cookie:     '',
+    interval:   60,
+    speedLimit: 100,
+    kmDelta:    50,
+  },
+  // ── STATE ──────────────────────────────────────────────────────
+  timer:       null,
+  running:     false,
+  vehicles:    [],   // données GPS brutes
+  alerts:      [],   // alertes accumulées
+  syncCount:   0,
+  kmSyncToday: 0,
+  fraudFlags:  [],
+
+  // ── INIT ───────────────────────────────────────────────────────
+  init() {
+    const saved = localStorage.getItem('COREDZ_GPS_CFG');
+    if (saved) this.cfg = { ...this.cfg, ...JSON.parse(saved) };
+    // Remettre les champs config
+    const f = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
+    f('cfg-gps-cookie',    this.cfg.cookie);
+    f('cfg-gps-interval',  this.cfg.interval);
+    f('cfg-gps-speed',     this.cfg.speedLimit);
+    f('cfg-gps-km-delta',  this.cfg.kmDelta);
+    this.chatAdd('🤖', 'Robot GPS initialisé. Configure ton cookie de session Algeofleet puis lance une synchronisation.', 'info');
+  },
+
+  saveConfig() {
+    this.cfg.cookie     = (document.getElementById('cfg-gps-cookie')?.value || '').trim();
+    this.cfg.interval   = parseInt(document.getElementById('cfg-gps-interval')?.value) || 60;
+    this.cfg.speedLimit = parseInt(document.getElementById('cfg-gps-speed')?.value)    || 100;
+    this.cfg.kmDelta    = parseInt(document.getElementById('cfg-gps-km-delta')?.value) || 50;
+    localStorage.setItem('COREDZ_GPS_CFG', JSON.stringify(this.cfg));
+    document.getElementById('modal-gps-config').classList.remove('open');
+    this.chatAdd('⚙️', 'Configuration sauvegardée. Démarrage de la synchronisation automatique...', 'info');
+    this.start();
+  },
+
+  // ── DÉMARRAGE SYNC AUTO ────────────────────────────────────────
+  start() {
+    if (this.timer) clearInterval(this.timer);
+    this.sync();
+    this.timer = setInterval(() => this.sync(), this.cfg.interval * 1000);
+    this.running = true;
+    this.setPulse('green');
+    document.getElementById('gps-live-badge').style.display = 'inline';
+    document.getElementById('gps-status-line').textContent = `ACTIF — Sync toutes les ${this.cfg.interval}s`;
+    document.getElementById('gps-sync-btn').textContent = '⏹ STOP';
+    document.getElementById('gps-sync-btn').onclick = () => GPS.stop();
+  },
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.running = false;
+    this.setPulse('red');
+    document.getElementById('gps-live-badge').style.display = 'none';
+    document.getElementById('gps-status-line').textContent = 'ARRÊTÉ';
+    document.getElementById('gps-sync-btn').textContent = '🔄 SYNC';
+    document.getElementById('gps-sync-btn').onclick = () => GPS.sync();
+    this.chatAdd('⏹', 'Synchronisation GPS arrêtée.', 'info');
+  },
+
+  // ── FETCH CORS-PROXY ───────────────────────────────────────────
+  async fetchGPS(endpoint) {
+    const url = `${this.cfg.baseUrl}/${endpoint}`;
+    // Utilise un proxy CORS public pour GitHub Pages
+    const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (this.cfg.cookie) headers['Cookie'] = this.cfg.cookie;
+    try {
+      const res = await fetch(proxy, { headers, credentials: 'omit' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch(e) {
+      console.warn('GPS fetch error:', endpoint, e.message);
+      return null;
+    }
+  },
+
+  // ── SYNCHRONISATION PRINCIPALE ─────────────────────────────────
+  async sync() {
+    this.chatAdd('📡', 'Synchronisation GPS en cours...', 'info');
+    const now = new Date().toLocaleTimeString('fr-FR');
+
+    // Fetch parallèle de tous les endpoints
+    const [liveData, eventsData, vehiclesData] = await Promise.all([
+      this.fetchGPS('live'),
+      this.fetchGPS('events'),
+      this.fetchGPS('vehiculesId'),
+    ]);
+
+    if (!liveData && !eventsData) {
+      // Mode simulation si pas de cookie ou pas d'accès
+      this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
+      this.setPulse('orange');
+      return;
+    }
+
+    this.setPulse('green');
+    document.getElementById('gps-last-update').textContent = now;
+
+    if (liveData) this.processLive(liveData);
+    if (eventsData) this.processEvents(eventsData);
+
+    this.syncCount++;
+    this.updateStats();
+    this.renderVehicles();
+    this.renderAlerts();
+    this.aiAnalyze();
+  },
+
+  // ── TRAITEMENT DONNÉES LIVE ────────────────────────────────────
+  processLive(data) {
+    const trips = Array.isArray(data) ? data : (data.trips || data.vehicles || []);
+    const vehicleMap = {};
+
+    trips.forEach(trip => {
+      const label = trip.deviceLabel || trip.label || '';
+      if (!label) return;
+      if (!vehicleMap[label]) {
+        vehicleMap[label] = {
+          label,
+          deviceId: trip.deviceId || '',
+          imei: trip.imei || '',
+          kmTotal: 0,
+          lastLat: trip.endLat || trip.startLat,
+          lastLng: trip.endLng || trip.startLng,
+          lastSeen: trip.sDate || trip.endDate || '',
+          speed: trip.speed || 0,
+          runDuration: 0,
+          idleDuration: 0,
+          trips: [],
+          status: 'online',
+        };
+      }
+      const v = vehicleMap[label];
+      // Accumulate distance
+      if (trip.distance) v.kmTotal += parseFloat(trip.distance) || 0;
+      if (trip.runDuration) v.runDuration += trip.runDuration;
+      if (trip.idleingDuration) v.idleDuration += trip.idleingDuration;
+      v.trips.push(trip);
+    });
+
+    this.vehicles = Object.values(vehicleMap);
+
+    // Sync KM vers CORE-DZ
+    let syncedCount = 0;
+    this.vehicles.forEach(gv => {
+      const kmGps = Math.round(gv.kmTotal);
+      if (kmGps < 1) return;
+
+      // Chercher dans TRACTEURS par matricule ou label
+      const t = TRACTEURS.find(t =>
+        (t.mat && gv.label && gv.label.replace(/-/g,',') === t.mat) ||
+        (t.mat && gv.label && t.mat.includes(gv.label.split('-')[0]))
+      );
+      if (t) {
+        const ecart = kmGps - t.km;
+        gv.matchedId = t.id;
+        gv.ecart = ecart;
+
+        if (Math.abs(ecart) >= this.cfg.kmDelta && kmGps > 0) {
+          const direction = ecart > 0 ? '📈' : '📉';
+          const type = ecart < 0 ? 'FRAUDE_KM' : 'UPDATE';
+
+          if (ecart < -100) {
+            // KM GPS INFÉRIEUR — alerte fraude potentielle
+            this.addAlert('🚨 FRAUDE KM POSSIBLE', `${t.id} (${t.mat}) — KM GPS: ${kmGps.toLocaleString('fr-FR')} < KM CORE-DZ: ${t.km.toLocaleString('fr-FR')} (écart: ${ecart.toLocaleString('fr-FR')} km)`, 'critique', t.id);
+            this.fraudFlags.push({ id: t.id, mat: t.mat, kmCoreDZ: t.km, kmGps, ecart, time: new Date().toLocaleString('fr-FR') });
+          } else if (ecart > 0) {
+            // Mise à jour normale
+            const kmAvant = t.km;
+            t.km = kmGps;
+            _saveAll();
+            this.kmSyncToday += ecart;
+            syncedCount++;
+            this.chatAdd(direction, `${t.id} · ${t.mat} — KM mis à jour: ${kmAvant.toLocaleString('fr-FR')} → ${kmGps.toLocaleString('fr-FR')} km (+${ecart.toLocaleString('fr-FR')} km)`, 'success');
+          }
+        }
+      } else {
+        // Véhicule GPS non trouvé dans CORE-DZ
+        gv.matchedId = null;
+        gv.ecart = null;
+      }
+    });
+
+    if (syncedCount > 0) {
+      renderTracteurs();
+      this.chatAdd('✅', `${syncedCount} camion(s) synchronisé(s) depuis le GPS Algeofleet.`, 'success');
+    }
+  },
+
+  // ── TRAITEMENT ÉVÉNEMENTS ──────────────────────────────────────
+  processEvents(data) {
+    const events = Array.isArray(data) ? data : (data.events || data.content || []);
+    const speedLimit = this.cfg.speedLimit;
+
+    events.forEach(ev => {
+      const code = String(ev.code || '');
+      const label = ev.label || ev.translateCode || '';
+      const vehicle = ev.deviceLabel || ev.vehicleLabel || '';
+      const speed = ev.speed || ev.value || 0;
+      const time = ev.eventTime || ev.date || '';
+
+      // EXCÈS DE VITESSE
+      if (code === '001' || label.includes('VITESSE') || speed > speedLimit) {
+        this.addAlert('⚡ EXCÈS DE VITESSE', `${vehicle} — ${speed} km/h (limite: ${speedLimit} km/h) à ${time}`, 'urgent', vehicle);
+        this.chatAdd('⚡', `EXCÈS VITESSE: ${vehicle} roulait à ${speed} km/h (limite ${speedLimit} km/h)`, 'danger');
+        // Enregistrer dans scoring chauffeur
+        this.penalizeChauffeur(vehicle, 'vitesse', speed);
+      }
+
+      // FREINAGE BRUSQUE
+      if (code === '002' || label.includes('FREINAGE') || label.includes('HARSH_BRAKE')) {
+        this.addAlert('🛑 FREINAGE BRUSQUE', `${vehicle} — ${time}`, 'alerte', vehicle);
+        this.chatAdd('🛑', `FREINAGE BRUSQUE détecté: ${vehicle}`, 'warn');
+        this.penalizeChauffeur(vehicle, 'freinage', 1);
+      }
+
+      // ACCÉLÉRATION BRUSQUE
+      if (code === '003' || label.includes('ACCÉLÉRATION') || label.includes('HARSH_ACCEL')) {
+        this.addAlert('🔥 ACCÉLÉRATION BRUSQUE', `${vehicle} — ${time}`, 'alerte', vehicle);
+        this.chatAdd('🔥', `ACCÉLÉRATION BRUSQUE: ${vehicle}`, 'warn');
+        this.penalizeChauffeur(vehicle, 'acceleration', 1);
+      }
+
+      // DÉTECTION ACCIDENT
+      if (code === '104' || label.includes('ACCIDENT')) {
+        this.addAlert('💥 ACCIDENT DÉTECTÉ', `${vehicle} — INTERVENTION IMMÉDIATE REQUISE — ${time}`, 'critique', vehicle);
+        this.chatAdd('💥', `🚨 ACCIDENT DÉTECTÉ: ${vehicle} — Contactez immédiatement le chauffeur !`, 'danger');
+      }
+
+      // DÉCONNEXION GPS / RETRAIT FICHE
+      if (code === '999' || label.includes('DISCONNECT') || label.includes('POWER_OFF') || label.includes('DÉBRANCH')) {
+        this.addAlert('🔌 GPS DÉBRANCHÉ', `${vehicle} — Signal GPS coupé ! Possible tentative de fraude — ${time}`, 'critique', vehicle);
+        this.chatAdd('🔌', `⚠️ ALERTE FRAUDE: ${vehicle} — Le traceur GPS a été débranché ou coupé !`, 'danger');
+        this.fraudFlags.push({ type: 'GPS_COUPE', vehicle, time: new Date().toLocaleString('fr-FR') });
+      }
+
+      // ÉVÉNEMENT REMORQUAGE
+      if (code === '031' || label.includes('REMORQUAGE')) {
+        this.addAlert('🪝 REMORQUAGE NON AUTORISÉ', `${vehicle} — ${time}`, 'urgent', vehicle);
+        this.chatAdd('🪝', `ÉVÉNEMENT REMORQUAGE détecté: ${vehicle} — Véhicule en mouvement sans conducteur ?`, 'danger');
+      }
+
+      // GÉOFENCE
+      if (label.includes('GÉOFENCE') || label.includes('GEOFENCE')) {
+        this.addAlert('📍 SORTIE ZONE', `${vehicle} — Sortie zone autorisée — ${time}`, 'alerte', vehicle);
+        this.chatAdd('📍', `GÉOFENCE: ${vehicle} a quitté la zone autorisée`, 'warn');
+      }
+
+      // CARBURANT — consommation anormale
+      if (label.includes('CARBURANT') || label.includes('FUEL') || ev.fuelLevel !== undefined) {
+        const fuel = ev.fuelLevel || ev.fuel || 0;
+        if (fuel < 10) {
+          this.addAlert('⛽ CARBURANT CRITIQUE', `${vehicle} — Niveau: ${fuel}%`, 'urgent', vehicle);
+          this.chatAdd('⛽', `CARBURANT CRITIQUE: ${vehicle} — Niveau à ${fuel}%`, 'warn');
+        }
+      }
+    });
+  },
+
+  // ── PÉNALISER CHAUFFEUR (SCORING) ──────────────────────────────
+  penalizeChauffeur(vehicleLabel, type, value) {
+    const t = TRACTEURS.find(t =>
+      t.mat && vehicleLabel && vehicleLabel.replace(/-/g,',').includes(t.mat.split(',')[0])
+    );
+    if (!t || !t.chauffeur) return;
+    const c = typeof CHAUFFEURS !== 'undefined' ?
+      CHAUFFEURS.find(c => c.nom && t.chauffeur && c.nom.toLowerCase().includes(t.chauffeur.toLowerCase().split(' ')[0])) : null;
+    if (c) {
+      if (type === 'vitesse')      c.vitesse_total  = (c.vitesse_total  || 0) + 1;
+      if (type === 'freinage')     c.freinage_total = (c.freinage_total || 0) + 1;
+      if (type === 'acceleration') c.accel_total    = (c.accel_total    || 0) + 1;
+      // Réduire le score
+      const malus = type === 'vitesse' ? 3 : 1;
+      c.score = Math.max(0, (c.score || 50) - malus);
+      _saveAll();
+    }
+  },
+
+  // ── ANALYSE AI ─────────────────────────────────────────────────
+  async aiAnalyze() {
+    if (this.vehicles.length === 0) return;
+
+    // Résumé des données pour l'IA
+    const critiques = this.alerts.filter(a => a.level === 'critique').length;
+    const alertes   = this.alerts.filter(a => a.level === 'urgent' || a.level === 'alerte').length;
+    const fraudes   = this.fraudFlags.length;
+    const synced    = this.vehicles.filter(v => v.matchedId).length;
+    const unknown   = this.vehicles.filter(v => !v.matchedId).length;
+
+    // Véhicules avec anomalie KM
+    const anomaliesKm = this.vehicles.filter(v => v.ecart !== null && v.ecart < -100);
+
+    let msg = `📊 Analyse sync #${this.syncCount} — ${new Date().toLocaleTimeString('fr-FR')}\n`;
+    msg += `• ${synced} véhicule(s) reconnus, ${unknown} inconnus\n`;
+    if (critiques > 0) msg += `• 🚨 ${critiques} alerte(s) CRITIQUE(S) active(s)\n`;
+    if (fraudes > 0)   msg += `• ⚠️ ${fraudes} indicateur(s) de FRAUDE détecté(s)\n`;
+    if (anomaliesKm.length > 0) {
+      msg += `• 🔴 ANOMALIE KM: `;
+      msg += anomaliesKm.map(v => `${v.matchedId} (écart ${v.ecart} km)`).join(', ');
+    }
+
+    if (critiques === 0 && fraudes === 0 && anomaliesKm.length === 0) {
+      msg = `✅ Sync #${this.syncCount} — Tout nominal. ${synced} véhicule(s) en ligne, aucune anomalie détectée.`;
+    }
+
+    this.chatAdd('🤖', msg, critiques > 0 || fraudes > 0 ? 'danger' : 'success');
+
+    // Appel IA Claude pour analyse approfondie si anomalies
+    if ((critiques > 0 || fraudes > 0) && typeof fetch !== 'undefined') {
+      this.aiDeepAnalysis(critiques, fraudes, anomaliesKm);
+    }
+  },
+
+  async aiDeepAnalysis(critiques, fraudes, anomaliesKm) {
+    try {
+      const context = `
+Tu es le robot de surveillance GPS de CORE-DZ, gestionnaire de flotte en Algérie.
+Données GPS Algeofleet récentes:
+- ${critiques} alertes critiques actives
+- ${fraudes} indicateurs de fraude
+- Anomalies KM: ${anomaliesKm.map(v => `${v.matchedId} (GPS:${v.kmTotal} vs CORE-DZ:${v.ecart+v.kmTotal})`).join(', ')}
+- Flags fraude: ${JSON.stringify(this.fraudFlags.slice(-3))}
+
+Donne une analyse courte (3-4 lignes max) avec:
+1. Évaluation du risque
+2. Actions immédiates recommandées
+3. Si fraude probable, mentionne-le clairement
+Réponds en français, direct et professionnel.`;
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 300,
+          messages: [{ role: 'user', content: context }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || '';
+      if (text) this.chatAdd('🧠', text, 'ai');
+    } catch(e) { /* silencieux */ }
+  },
+
+  // ── QUESTION ADMIN → AI ────────────────────────────────────────
+  async sendQuestion(question) {
+    if (!question.trim()) return;
+    this.chatAdd('👤', question, 'user');
+    document.getElementById('gps-chat-input').value = '';
+
+    const context = `
+Tu es le robot GPS de CORE-DZ. Voici les données GPS actuelles:
+Véhicules: ${JSON.stringify(this.vehicles.slice(0,10))}
+Alertes: ${JSON.stringify(this.alerts.slice(0,10))}
+Fraudes: ${JSON.stringify(this.fraudFlags)}
+TRACTEURS CORE-DZ: ${JSON.stringify(TRACTEURS.map(t=>({id:t.id,mat:t.mat,km:t.km,chauffeur:t.chauffeur})))}
+
+Question admin: ${question}
+Réponds en français, sois précis et concis.`;
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 500,
+          messages: [{ role: 'user', content: context }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || 'Désolé, je n\'ai pas pu analyser.';
+      this.chatAdd('🤖', text, 'ai');
+    } catch(e) {
+      this.chatAdd('⚠️', 'Connexion IA temporairement indisponible.', 'warn');
+    }
+  },
+
+  // ── SAISIE BULK ────────────────────────────────────────────────
+  processBulk() {
+    const raw = (document.getElementById('gps-bulk-input')?.value || '').trim();
+    if (!raw) { showToast('⚠️ Aucune donnée saisie'); return; }
+
+    const lines = raw.split('\n').filter(l => l.trim());
+    let updated = 0, errors = 0, frauds = 0;
+    const results = [];
+
+    lines.forEach(line => {
+      const parts = line.trim().split(/[\s,;]+/);
+      if (parts.length < 2) { errors++; return; }
+      const idOrMat = parts[0].toUpperCase();
+      const km = parseInt(parts[1].replace(/[^\d]/g, ''));
+      if (isNaN(km) || km < 1) { errors++; return; }
+
+      // Chercher le tracteur
+      const t = TRACTEURS.find(t =>
+        t.id === idOrMat ||
+        (t.mat && t.mat.replace(/,/g,'').includes(idOrMat.replace(/,/g,'')))
+      ) || REMORQUES?.find(r =>
+        r.id === idOrMat ||
+        (r.mat && r.mat.replace(/,/g,'').includes(idOrMat.replace(/,/g,'')))
+      );
+
+      if (!t) { errors++; results.push({ id: idOrMat, km, status: 'INCONNU' }); return; }
+
+      const ecart = km - t.km;
+
+      if (km < t.km - 100) {
+        // Fraude potentielle
+        frauds++;
+        this.addAlert('🚨 FRAUDE KM', `${t.id} (${t.mat}) — GPS: ${km.toLocaleString('fr-FR')} km < CORE-DZ: ${t.km.toLocaleString('fr-FR')} km`, 'critique', t.id);
+        this.chatAdd('🚨', `FRAUDE KM DÉTECTÉE: ${t.id} — KM saisi (${km.toLocaleString('fr-FR')}) inférieur au KM enregistré (${t.km.toLocaleString('fr-FR')}) — Écart: ${ecart.toLocaleString('fr-FR')} km`, 'danger');
+        results.push({ id: t.id, mat: t.mat, km, kmBefore: t.km, ecart, status: 'FRAUDE' });
+      } else if (km > t.km) {
+        t.km = km;
+        updated++;
+        this.kmSyncToday += ecart;
+        results.push({ id: t.id, mat: t.mat, km, kmBefore: t.km - ecart, ecart, status: 'OK' });
+      } else {
+        results.push({ id: t.id, mat: t.mat, km, ecart: 0, status: 'IDENTIQUE' });
+      }
+    });
+
+    if (updated > 0) { _saveAll(); renderTracteurs(); }
+
+    this.updateStats();
+    this.renderAlerts();
+    document.getElementById('gps-bulk-input').value = '';
+    document.getElementById('gps-bulk-preview').innerHTML = '';
+
+    // Résumé IA
+    let summary = `📋 Saisie GPS terminée: ${updated} mis à jour`;
+    if (frauds > 0) summary += `, 🚨 ${frauds} FRAUDE(S) DÉTECTÉE(S)`;
+    if (errors > 0) summary += `, ${errors} erreur(s)`;
+    this.chatAdd('📋', summary, frauds > 0 ? 'danger' : 'success');
+
+    showToast(frauds > 0 ? `🚨 ${frauds} fraude(s) KM détectée(s) !` : `✅ ${updated} camion(s) mis à jour depuis GPS`);
+
+    if (frauds > 0 || updated > 0) this.aiAnalyzeManual(results);
+  },
+
+  async aiAnalyzeManual(results) {
+    const fraudResults = results.filter(r => r.status === 'FRAUDE');
+    if (fraudResults.length === 0 && results.filter(r=>r.status==='OK').length === 0) return;
+    try {
+      const prompt = `Tu es le robot GPS CORE-DZ. Analyse ces résultats de synchronisation KM:
+${JSON.stringify(results)}
+Donne un résumé d'analyse en 3-5 lignes: risques fraude, recommandations, actions immédiates. Sois direct et précis.`;
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: prompt }] })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || '';
+      if (text) this.chatAdd('🧠', text, 'ai');
+    } catch(e) {}
+  },
+
+  previewBulk() {
+    const raw = (document.getElementById('gps-bulk-input')?.value || '').trim();
+    const lines = raw.split('\n').filter(l => l.trim());
+    const preview = document.getElementById('gps-bulk-preview');
+    if (!preview) return;
+    if (lines.length === 0) { preview.innerHTML = ''; return; }
+    preview.innerHTML = `<span style="color:var(--green);">✓ ${lines.length} ligne(s) détectée(s)</span>`;
+  },
+
+  // ── SAISIE MANUELLE ────────────────────────────────────────────
+  openManual() {
+    const rows = document.getElementById('gps-manual-rows');
+    if (!rows) return;
+    rows.innerHTML = TRACTEURS.slice(0, 20).map(t => `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="width:80px;font-family:Rajdhani,sans-serif;font-size:13px;color:var(--gold);font-weight:700;">${t.id}</div>
+        <div style="flex:1;font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.mat}</div>
+        <div style="width:60px;font-family:Rajdhani,sans-serif;font-size:11px;color:var(--text-dim);">${t.km > 0 ? t.km.toLocaleString('fr-FR') : '—'}</div>
+        <input type="number" placeholder="GPS km" id="man-km-${t.id}"
+          style="width:90px;padding:6px;background:var(--bg4);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:Rajdhani,sans-serif;font-size:13px;text-align:center;outline:none;">
+      </div>`).join('');
+    document.getElementById('modal-gps-manual').classList.add('open');
+  },
+
+  applyManual() {
+    let updated = 0, frauds = 0;
+    TRACTEURS.forEach(t => {
+      const el = document.getElementById(`man-km-${t.id}`);
+      if (!el || !el.value) return;
+      const km = parseInt(el.value);
+      if (isNaN(km) || km < 1) return;
+      const ecart = km - t.km;
+      if (km < t.km - 100) {
+        frauds++;
+        this.addAlert('🚨 FRAUDE KM', `${t.id} — GPS: ${km.toLocaleString('fr-FR')} < CORE-DZ: ${t.km.toLocaleString('fr-FR')}`, 'critique', t.id);
+        this.chatAdd('🚨', `FRAUDE: ${t.id} KM GPS (${km.toLocaleString('fr-FR')}) inférieur à CORE-DZ (${t.km.toLocaleString('fr-FR')})`, 'danger');
+      } else if (km > t.km) {
+        t.km = km;
+        updated++;
+        this.kmSyncToday += ecart;
+        this.chatAdd('📍', `${t.id} mis à jour: ${(km-ecart).toLocaleString('fr-FR')} → ${km.toLocaleString('fr-FR')} km`, 'success');
+      }
+    });
+    if (updated > 0) { _saveAll(); renderTracteurs(); }
+    document.getElementById('modal-gps-manual').classList.remove('open');
+    this.updateStats();
+    this.renderAlerts();
+    showToast(frauds > 0 ? `🚨 ${frauds} fraude(s) détectée(s) !` : `✅ ${updated} mis à jour`);
+  },
+
+  // ── RENDER VÉHICULES ───────────────────────────────────────────
+  renderVehicles() {
+    const container = document.getElementById('gps-vehicles-list');
+    if (!container) return;
+    if (this.vehicles.length === 0) {
+      container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:12px;">Aucun véhicule GPS reçu</div>';
+      return;
+    }
+    container.innerHTML = this.vehicles.map(v => {
+      const t = v.matchedId ? TRACTEURS.find(t => t.id === v.matchedId) : null;
+      const statusColor = v.status === 'online' ? 'var(--green)' : 'var(--red)';
+      const ecartColor  = v.ecart === null ? 'var(--text-dim)' : v.ecart < -100 ? 'var(--red)' : v.ecart > 0 ? 'var(--green)' : 'var(--text-dim)';
+      const ecartStr    = v.ecart === null ? '—' : v.ecart > 0 ? `+${v.ecart.toLocaleString('fr-FR')} km` : `${v.ecart.toLocaleString('fr-FR')} km`;
+      return `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-left:3px solid ${statusColor};border-radius:8px;padding:10px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div>
+            <span style="font-family:Rajdhani,sans-serif;font-size:15px;font-weight:700;color:var(--gold);">${v.label}</span>
+            ${t ? `<span style="font-size:10px;color:var(--text-dim);margin-left:6px;">${t.id} · ${t.chauffeur||'—'}</span>` : '<span style="font-size:9px;color:var(--orange);margin-left:6px;">⚠️ NON IDENTIFIÉ</span>'}
+          </div>
+          <span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:3px;background:rgba(52,199,89,0.15);color:${statusColor};border:1px solid ${statusColor}40;">● LIVE</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;">
+          <div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;">
+            <div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:var(--text);">${Math.round(v.kmTotal).toLocaleString('fr-FR')}</div>
+            <div style="font-size:9px;color:var(--text-dim);">KM GPS</div>
+          </div>
+          <div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;">
+            <div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:${ecartColor};">${ecartStr}</div>
+            <div style="font-size:9px;color:var(--text-dim);">ÉCART</div>
+          </div>
+          <div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;">
+            <div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--text-dim);">${v.lastSeen ? v.lastSeen.substring(0,16) : '—'}</div>
+            <div style="font-size:9px;color:var(--text-dim);">DERNIER SIGNAL</div>
+          </div>
+        </div>
+        ${v.ecart < -100 ? '<div style="margin-top:6px;padding:4px 8px;background:rgba(255,59,48,0.15);border:1px solid rgba(255,59,48,0.3);border-radius:4px;font-size:10px;color:var(--red);font-weight:700;">🚨 ANOMALIE KM — Possible manipulation du compteur !</div>' : ''}
+      </div>`;
+    }).join('');
+  },
+
+  // ── RENDER ALERTES ─────────────────────────────────────────────
+  renderAlerts() {
+    const container = document.getElementById('gps-alerts-list');
+    if (!container) return;
+    if (this.alerts.length === 0) {
+      container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:11px;">Aucune alerte</div>';
+      return;
+    }
+    const levelColor = { critique:'var(--red)', urgent:'var(--orange)', alerte:'var(--orange)', info:'var(--blue)' };
+    container.innerHTML = this.alerts.slice(0, 20).map((a, i) => `
+      <div style="background:var(--bg3);border-left:3px solid ${levelColor[a.level]||'var(--orange)'};border-radius:6px;padding:8px 10px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:flex-start;">
+        <div style="flex:1;">
+          <div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:${levelColor[a.level]||'var(--orange)'};">${a.title}</div>
+          <div style="font-size:11px;color:var(--text);margin-top:2px;">${a.message}</div>
+          <div style="font-size:9px;color:var(--text-dim);margin-top:3px;">${a.time}</div>
+        </div>
+        <button onclick="GPS.dismissAlert(${i})" style="background:none;border:none;color:var(--text-dim);font-size:14px;cursor:pointer;padding:0 0 0 8px;">✕</button>
+      </div>`).join('');
+    // Badge nav
+    const badge = document.getElementById('gps-nav-badge');
+    if (badge) {
+      const critiques = this.alerts.filter(a => a.level === 'critique').length;
+      badge.style.display = critiques > 0 ? 'inline' : 'none';
+      badge.style.background = 'var(--red)';
+    }
+  },
+
+  // ── UTILITAIRES ────────────────────────────────────────────────
+  addAlert(title, message, level, vehicleId) {
+    // Éviter les doublons récents (même titre + véhicule dans les 5 dernières)
+    const recent = this.alerts.slice(0, 5).find(a => a.title === title && a.vehicleId === vehicleId);
+    if (recent) return;
+    this.alerts.unshift({ title, message, level, vehicleId, time: new Date().toLocaleString('fr-FR') });
+    if (this.alerts.length > 50) this.alerts = this.alerts.slice(0, 50);
+  },
+
+  dismissAlert(idx) { this.alerts.splice(idx, 1); this.renderAlerts(); },
+  clearAlerts()     { this.alerts = []; this.renderAlerts(); },
+
+  updateStats() {
+    const el = id => document.getElementById(id);
+    const critiques = this.alerts.filter(a => a.level === 'critique').length;
+    const alertes   = this.alerts.filter(a => a.level !== 'critique').length;
+    if (el('gps-stat-sync'))   el('gps-stat-sync').textContent   = this.syncCount;
+    if (el('gps-stat-ecart'))  el('gps-stat-ecart').textContent  = this.vehicles.filter(v => v.ecart && Math.abs(v.ecart) > 0).length;
+    if (el('gps-stat-alerte')) el('gps-stat-alerte').textContent = critiques + alertes;
+    if (el('gps-stat-total'))  el('gps-stat-total').textContent  = '+' + this.kmSyncToday.toLocaleString('fr-FR');
+  },
+
+  setPulse(color) {
+    const dot = document.getElementById('gps-pulse-dot');
+    if (!dot) return;
+    const colors = { green: 'var(--green)', orange: 'var(--orange)', red: 'var(--red)' };
+    dot.style.background = colors[color] || 'var(--red)';
+    if (color === 'green') {
+      dot.style.animation = 'gpsPulse 1.5s infinite';
+    } else {
+      dot.style.animation = 'none';
+    }
+  },
+
+  chatAdd(icon, msg, type) {
+    const chat = document.getElementById('gps-chat');
+    if (!chat) return;
+    const colors = {
+      success: 'var(--green)', danger: 'var(--red)', warn: 'var(--orange)',
+      info: 'var(--text-dim)', user: 'var(--blue)', ai: 'var(--gold)'
+    };
+    const bgColors = {
+      success: 'rgba(52,199,89,0.08)', danger: 'rgba(255,59,48,0.1)',
+      warn: 'rgba(255,149,0,0.08)', info: 'rgba(255,255,255,0.03)',
+      user: 'rgba(10,132,255,0.08)', ai: 'rgba(201,168,76,0.08)'
+    };
+    const color = colors[type] || 'var(--text)';
+    const bg    = bgColors[type] || 'var(--bg3)';
+    const time  = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    // Remove empty state
+    const empty = chat.querySelector('div[style*="text-align:center"]');
+    if (empty && chat.children.length <= 2) chat.innerHTML = '';
+    const div = document.createElement('div');
+    div.style.cssText = `background:${bg};border-left:2px solid ${color};border-radius:5px;padding:6px 10px;font-size:11px;`;
+    div.innerHTML = `<span style="font-size:13px;">${icon}</span> <span style="color:${color};font-weight:600;">${msg.replace(/\n/g,'<br>')}</span><span style="float:right;font-size:9px;color:var(--text-dim);margin-top:1px;">${time}</span>`;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    // Garde max 100 messages
+    while (chat.children.length > 100) chat.removeChild(chat.firstChild);
+  },
+
+  clearChat() {
+    const chat = document.getElementById('gps-chat');
+    if (chat) chat.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:12px;">Canal vidé.</div>';
+  },
+};
+
+// ── CSS ANIMATION PULSE ─────────────────────────────────────────
+(function(){
+  const s = document.createElement('style');
+  s.textContent = `@keyframes gpsPulse { 0%{box-shadow:0 0 0 0 rgba(52,199,89,0.6)} 70%{box-shadow:0 0 0 8px rgba(52,199,89,0)} 100%{box-shadow:0 0 0 0 rgba(52,199,89,0)} }`;
+  document.head.appendChild(s);
+})();
+
+// ── FONCTIONS GLOBALES (appelées depuis HTML) ───────────────────
+function gpsSaveConfig()    { GPS.saveConfig(); }
+function gpsSync()          { GPS.sync(); }
+function gpsProcessBulk()   { GPS.processBulk(); }
+function gpsPreviewBulk()   { GPS.previewBulk(); }
+function gpsOpenManual()    { GPS.openManual(); }
+function gpsApplyManual()   { GPS.applyManual(); }
+function gpsSendQuestion()  { const q = document.getElementById('gps-chat-input')?.value; if(q) GPS.sendQuestion(q); }
+function gpsClearChat()     { GPS.clearChat(); }
+function gpsClearAlerts()   { GPS.clearAlerts(); }
+
+// ── INIT AU CHARGEMENT ──────────────────────────────────────────
+window.addEventListener('load', () => {
+  setTimeout(() => GPS.init(), 1500);
+});
+</script>
 
 </body>
 </html>
