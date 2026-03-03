@@ -3310,6 +3310,11 @@ window.addEventListener('load', function() {
         Connecte-toi sur Algeofleet, ouvre F12 → Network → clique sur n'importe quelle requête → Headers → cherche <strong>Cookie:</strong> et copie la valeur complète.
       </div>
       <div class="form-group">
+        <div class="form-label">🔗 URL DU WORKER CLOUDFLARE (PROXY)</div>
+        <input type="text" class="form-input" id="cfg-gps-worker" placeholder="https://purple-king-3842.yahiacheriframel.workers.dev" style="font-family:monospace;font-size:11px;">
+        <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Collez ici l'URL de votre Worker Cloudflare</div>
+      </div>
+      <div class="form-group">
         <div class="form-label">🍪 COOKIE DE SESSION (JSESSIONID + SERVER_USED)</div>
         <textarea class="form-input" id="cfg-gps-cookie" placeholder="JSESSIONID=xxx; SERVER_USED=s1|aada4|aadaYb; ..."
           style="height:80px;resize:vertical;font-family:monospace;font-size:11px;"></textarea>
@@ -11245,6 +11250,7 @@ const GPS = {
     // Remettre les champs config
     const f = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
     f('cfg-gps-cookie',    this.cfg.cookie);
+    f('cfg-gps-worker',    this.cfg.workerUrl || '');
     f('cfg-gps-interval',  this.cfg.interval);
     f('cfg-gps-speed',     this.cfg.speedLimit);
     f('cfg-gps-km-delta',  this.cfg.kmDelta);
@@ -11253,6 +11259,7 @@ const GPS = {
 
   saveConfig() {
     this.cfg.cookie     = (document.getElementById('cfg-gps-cookie')?.value || '').trim();
+    this.cfg.workerUrl  = (document.getElementById('cfg-gps-worker')?.value || '').trim().replace(/\/$/, '');
     this.cfg.interval   = parseInt(document.getElementById('cfg-gps-interval')?.value) || 60;
     this.cfg.speedLimit = parseInt(document.getElementById('cfg-gps-speed')?.value)    || 100;
     this.cfg.kmDelta    = parseInt(document.getElementById('cfg-gps-km-delta')?.value) || 50;
@@ -11288,13 +11295,20 @@ const GPS = {
 
   // ── FETCH CORS-PROXY ───────────────────────────────────────────
   async fetchGPS(endpoint) {
-    const url = `${this.cfg.baseUrl}/${endpoint}`;
-    // Utilise un proxy CORS public pour GitHub Pages
-    const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.cfg.cookie) headers['Cookie'] = this.cfg.cookie;
+    if (!this.cfg.cookie) {
+      this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
+      return null;
+    }
+    // Utilise le Worker Cloudflare si configuré, sinon corsproxy.io
+    let fetchUrl;
+    if (this.cfg.workerUrl) {
+      fetchUrl = `${this.cfg.workerUrl}?cookie=${encodeURIComponent(this.cfg.cookie)}&endpoint=${encodeURIComponent(endpoint)}`;
+    } else {
+      const url = `${this.cfg.baseUrl}/${endpoint}`;
+      fetchUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    }
     try {
-      const res = await fetch(proxy, { headers, credentials: 'omit' });
+      const res = await fetch(fetchUrl, { credentials: 'omit' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch(e) {
