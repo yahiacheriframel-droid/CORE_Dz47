@@ -11299,13 +11299,19 @@ const GPS = {
       this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
       return null;
     }
-    // Utilise le Worker Cloudflare si configuré, sinon corsproxy.io
+    // Map endpoint vers URL complète
+    const endpointMap = {
+      'live':       'rest/dashboard/live',
+      'events':     'rest/dashboard/events',
+      'vehiculesId':'rest/dashboard/vehiculesId',
+    };
+    const path = endpointMap[endpoint] || endpoint;
+
     let fetchUrl;
     if (this.cfg.workerUrl) {
-      fetchUrl = `${this.cfg.workerUrl}?cookie=${encodeURIComponent(this.cfg.cookie)}&endpoint=${encodeURIComponent(endpoint)}`;
+      fetchUrl = `${this.cfg.workerUrl}?cookie=${encodeURIComponent(this.cfg.cookie)}&endpoint=${encodeURIComponent(path)}`;
     } else {
-      const url = `${this.cfg.baseUrl}/${endpoint}`;
-      fetchUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+      fetchUrl = `https://corsproxy.io/?${encodeURIComponent('https://activegps.algeofleet.com/' + path)}`;
     }
     try {
       const res = await fetch(fetchUrl, { credentials: 'omit' });
@@ -11351,35 +11357,61 @@ const GPS = {
 
   // ── TRAITEMENT DONNÉES LIVE ────────────────────────────────────
   processLive(data) {
-    const trips = Array.isArray(data) ? data : (data.trips || data.vehicles || []);
     const vehicleMap = {};
 
-    trips.forEach(trip => {
-      const label = trip.deviceLabel || trip.label || '';
-      if (!label) return;
-      if (!vehicleMap[label]) {
-        vehicleMap[label] = {
-          label,
-          deviceId: trip.deviceId || '',
-          imei: trip.imei || '',
-          kmTotal: 0,
-          lastLat: trip.endLat || trip.startLat,
-          lastLng: trip.endLng || trip.startLng,
-          lastSeen: trip.sDate || trip.endDate || '',
-          speed: trip.speed || 0,
-          runDuration: 0,
-          idleDuration: 0,
-          trips: [],
-          status: 'online',
-        };
-      }
-      const v = vehicleMap[label];
-      // Accumulate distance
-      if (trip.distance) v.kmTotal += parseFloat(trip.distance) || 0;
-      if (trip.runDuration) v.runDuration += trip.runDuration;
-      if (trip.idleingDuration) v.idleDuration += trip.idleingDuration;
-      v.trips.push(trip);
-    });
+    // Format API: { liveDashboard: { "deviceId": { trips: [...], totalDistance, ... } } }
+    const dashboard = data.liveDashboard || data;
+
+    if (typeof dashboard === 'object' && !Array.isArray(dashboard)) {
+      Object.values(dashboard).forEach(deviceData => {
+        const trips = deviceData.trips || [];
+        trips.forEach(trip => {
+          const label = trip.deviceLabel || trip.label || '';
+          if (!label) return;
+          if (!vehicleMap[label]) {
+            vehicleMap[label] = {
+              label,
+              deviceId: trip.deviceId || '',
+              imei: trip.imei || '',
+              kmTotal: 0,
+              lastLat: trip.endLat || trip.startLat,
+              lastLng: trip.endLng || trip.startLng,
+              lastSeen: trip.sDate || trip.endDate || '',
+              speed: trip.speed || 0,
+              runDuration: 0,
+              idleDuration: 0,
+              trips: [],
+              status: 'online',
+            };
+          }
+          const v = vehicleMap[label];
+          if (trip.distance) v.kmTotal += parseFloat(trip.distance) || 0;
+          if (trip.runDuration) v.runDuration += trip.runDuration;
+          if (trip.idleingDuration) v.idleDuration += trip.idleingDuration;
+          v.trips.push(trip);
+        });
+        // Utilise totalDistance si disponible
+        const firstTrip = trips[0];
+        if (firstTrip) {
+          const label = firstTrip.deviceLabel || firstTrip.label || '';
+          if (label && vehicleMap[label] && deviceData.totalDistance) {
+            vehicleMap[label].kmTotal = parseFloat(deviceData.totalDistance) || vehicleMap[label].kmTotal;
+          }
+        }
+      });
+    } else {
+      // Fallback ancien format
+      const tripsArr = Array.isArray(data) ? data : [];
+      tripsArr.forEach(trip => {
+        const label = trip.deviceLabel || trip.label || '';
+        if (!label) return;
+        if (!vehicleMap[label]) {
+          vehicleMap[label] = { label, deviceId: trip.deviceId || '', imei: trip.imei || '', kmTotal: 0, lastLat: trip.endLat, lastLng: trip.endLng, lastSeen: trip.sDate || '', speed: 0, runDuration: 0, idleDuration: 0, trips: [], status: 'online' };
+        }
+        if (trip.distance) vehicleMap[label].kmTotal += parseFloat(trip.distance) || 0;
+        vehicleMap[label].trips.push(trip);
+      });
+    }
 
     this.vehicles = Object.values(vehicleMap);
 
