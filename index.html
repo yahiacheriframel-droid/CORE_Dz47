@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>CORE-DZ v25 | Gestion de Flotte</title>
+<title>CORE-DZ v32 | Gestion de Flotte</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -11450,15 +11450,102 @@ const GPS = {
           }
         }
       } else {
-        // Véhicule GPS non trouvé dans CORE-DZ
+        // Véhicule GPS non trouvé dans CORE-DZ → ajout automatique
         gv.matchedId = null;
         gv.ecart = null;
+        this.autoAddVehicle(gv);
       }
     });
 
     if (syncedCount > 0) {
       renderTracteurs();
       this.chatAdd('✅', `${syncedCount} camion(s) synchronisé(s) depuis le GPS Algeofleet.`, 'success');
+    }
+  },
+
+  // ── AJOUT AUTOMATIQUE NOUVEAU VÉHICULE GPS ─────────────────────
+  autoAddVehicle(gv) {
+    const label = gv.label || '';
+    const imei  = gv.imei  || '';
+
+    // Éviter les doublons — vérifier si déjà ajouté ce cycle
+    if (this._autoAdded && this._autoAdded.has(label)) return;
+    if (!this._autoAdded) this._autoAdded = new Set();
+    this._autoAdded.add(label);
+
+    // Détecter le type selon le label GPS
+    // Logique : contient REM/RMQ → Remorque | contient VL/VP/UT → Véhicule léger | sinon → Tracteur
+    const upper = label.toUpperCase();
+    let vehicleType = 'tracteur';
+    if (upper.includes('REM') || upper.includes('RMQ') || upper.includes('SEMI')) {
+      vehicleType = 'remorque';
+    } else if (upper.includes('VL') || upper.includes('VP') || upper.includes('UT') || upper.includes('FOURGON') || upper.includes('PICKUP') || upper.includes('BERLINE')) {
+      vehicleType = 'vl';
+    }
+
+    const kmGps = Math.round(gv.kmTotal) || 0;
+    const today  = new Date().toLocaleDateString('fr-FR');
+
+    if (vehicleType === 'tracteur') {
+      // Vérifier si déjà dans TRACTEURS
+      const existe = TRACTEURS.find(t => t.mat && label && t.mat.replace(/,/g,'-').includes(label.split('-')[0]));
+      if (existe) return;
+
+      // Générer un nouvel ID
+      const nums = TRACTEURS.map(t => parseInt(t.id.replace('T',''))).filter(n=>!isNaN(n));
+      const nextNum = (Math.max(0, ...nums) + 1).toString().padStart(2,'0');
+      const newId = 'T' + nextNum;
+
+      const newT = {
+        id: newId, mat: label, chauffeur: '—', marque: 'GPS AUTO — ' + label,
+        km: kmGps, derVid: 0, dateDerVid: '—',
+        derInj:0, derTurbo:0, derDistri:0, derPompe:0, derTrans:0, derDessi:0, derRefr:0, derSusp:0, derFrein:0,
+        echAss:'—', echCtrl:'—', echVign:'—', statutLegal:'OK', verdict:'DISPONIBLE',
+        remorque:'', situationParc:'EN SERVICE',
+        protocol:'GPS : Véhicule ajouté automatiquement depuis GPS. Veuillez compléter les informations.',
+        gpsLabel: label, gpsImei: imei, gpsAuto: true
+      };
+      TRACTEURS.push(newT);
+      _saveAll();
+      renderTracteurs();
+      this.chatAdd('🆕', `NOUVEAU TRACTEUR ajouté : ${newId} (${label}) — KM GPS: ${kmGps.toLocaleString('fr-FR')} km. Veuillez compléter les infos.`, 'warn');
+      this.addAlert('🆕 NOUVEAU VÉHICULE', `${newId} (${label}) ajouté automatiquement depuis GPS`, 'info', newId);
+
+    } else if (vehicleType === 'remorque') {
+      const existe = REMORQUES.find(r => r.mat && label && r.mat.includes(label.split('-')[0]));
+      if (existe) return;
+
+      const nums = REMORQUES.map(r => parseInt(r.id.replace('R',''))).filter(n=>!isNaN(n));
+      const nextNum = (Math.max(0, ...nums) + 1).toString().padStart(2,'0');
+      const newId = 'R' + nextNum;
+
+      const newR = {
+        id: newId, mat: label, type: 'semi', marque: 'GPS AUTO — ' + label,
+        echAss:'—', echCtrl:'—', echVign:'—', statutLegal:'OK',
+        gpsLabel: label, gpsAuto: true
+      };
+      REMORQUES.push(newR);
+      _saveAll();
+      this.chatAdd('🆕', `NOUVELLE REMORQUE ajoutée : ${newId} (${label}). Veuillez compléter les infos.`, 'warn');
+
+    } else if (vehicleType === 'vl') {
+      const existe = VEHICULES_LEGERS.find(v => v.mat && label && v.mat.includes(label));
+      if (existe) return;
+
+      const nums = VEHICULES_LEGERS.map(v => parseInt(v.id.replace('VL',''))).filter(n=>!isNaN(n));
+      const nextNum = (Math.max(0, ...nums) + 1).toString().padStart(2,'0');
+      const newId = 'VL' + nextNum;
+
+      const newVL = {
+        id: newId, type: 'fourgon', marque: 'GPS AUTO', modele: label,
+        mat: label, chauffeur: '—', km: kmGps,
+        echAss:'—', echCtrl:'—', echVign:'—', statutLegal:'OK',
+        gpsLabel: label, gpsAuto: true
+      };
+      VEHICULES_LEGERS.push(newVL);
+      _saveAll();
+      renderVehiculesLegers();
+      this.chatAdd('🆕', `NOUVEAU VÉHICULE LÉGER ajouté : ${newId} (${label}) — KM GPS: ${kmGps.toLocaleString('fr-FR')} km.`, 'warn');
     }
   },
 
