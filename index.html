@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>CORE-DZ v34 | Gestion de Flotte</title>
+<title>CORE-DZ v36 | Gestion de Flotte</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -3307,7 +3307,7 @@ window.addEventListener('load', function() {
       </div>
       <div style="background:rgba(52,199,89,0.08);border:1px solid rgba(52,199,89,0.3);border-radius:8px;padding:12px;margin-bottom:14px;font-size:11px;color:var(--text);line-height:1.7;">
         🤖 <strong style="color:var(--green);">CONNEXION AUTOMATIQUE ACTIVÉE</strong><br>
-        Login : <strong>info@piramid-grop.com</strong> — Le robot se connecte seul !<br>
+        Login : <strong><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="422b2c242d02322b30232f2b266f25302d326c212d2f">[email&#160;protected]</a></strong> — Le robot se connecte seul !<br>
         Si la connexion auto échoue, collez le cookie manuellement ci-dessous.
       </div>
       <div class="form-group">
@@ -3594,7 +3594,7 @@ window.addEventListener('load', function() {
   z-index:9999;
 ">✅ Enregistré !</div>
 
-<script>
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
 // ===== DATA =====
 // ===== SEUILS MAINTENANCE TRACTEURS (km depuis dernière intervention) =====
 // Règle : 🟢 < 70% | 🟡 70-87% | 🔴 ≥ 87%
@@ -12143,11 +12143,278 @@ function gpsSendQuestion()  { const q = document.getElementById('gps-chat-input'
 function gpsClearChat()     { GPS.clearChat(); }
 function gpsClearAlerts()   { GPS.clearAlerts(); }
 
-// ── INIT AU CHARGEMENT ──────────────────────────────────────────
-window.addEventListener('load', () => {
-  setTimeout(() => GPS.init(), 1500);
-});
-</script>
+// ══════════════════════════════════════════════════════════════
+// CORE-DZ v36 — MOTEUR GPS TEMPS RÉEL
+// Connexion via serveur proxy local Python (port 5000)
+// Si proxy indisponible → simulation avec données réalistes
+// ══════════════════════════════════════════════════════════════
 
+// Auto-détection PC (localhost) ou Android/mobile (IP réseau)
+const PROXY_URL = (function() {
+  const h = window.location.hostname;
+  // Si on ouvre le fichier directement (file://) ou depuis localhost → proxy local
+  if (!h || h === 'localhost' || h === '127.0.0.1') return 'http://localhost:5000';
+  // Si on accède depuis un autre appareil sur le réseau → même IP, port 5000
+  return 'http://' + h + ':5000';
+})();
+let gpsRtInterval = null;
+let gpsSyncCount  = 0;
+let gpsOnline     = false;
+
+// ── DÉMARRAGE AUTOMATIQUE ─────────────────────────────────────
+function gpsV36Start() {
+  if (gpsRtInterval) return;
+  gpsSetStatus('connecting');
+  gpsV36Sync();
+  gpsRtInterval = setInterval(gpsV36Sync, 15000);
+  const btn = document.getElementById('btn-rt-toggle');
+  if (btn) { btn.textContent = '⏹ STOP TEMPS RÉEL'; btn.style.cssText += ';background:rgba(255,59,48,0.2);color:var(--red);border-color:rgba(255,59,48,0.5);'; }
+}
+
+function gpsV36Stop() {
+  clearInterval(gpsRtInterval);
+  gpsRtInterval = null;
+  gpsSetStatus('stopped');
+  const btn = document.getElementById('btn-rt-toggle');
+  if (btn) { btn.textContent = '▶ DÉMARRER TEMPS RÉEL'; btn.style.cssText += ';background:rgba(52,199,89,0.15);color:var(--green);border-color:rgba(52,199,89,0.4);'; }
+}
+
+function gpsV36Toggle() {
+  gpsRtInterval ? gpsV36Stop() : gpsV36Start();
+}
+
+function gpsSetStatus(state) {
+  const dot = document.getElementById('gps-rt-dot');
+  const lbl = document.getElementById('gps-rt-label');
+  const cnt = document.getElementById('gps-rt-count');
+  if (!dot || !lbl) return;
+  const states = {
+    connecting: { color: 'var(--orange)', text: '🔄 Connexion au serveur GPS...' },
+    online:     { color: 'var(--green)',  text: '🟢 Temps réel actif — Proxy local connecté' },
+    simulation: { color: 'var(--blue)',   text: '🔵 Mode simulation — Proxy non disponible' },
+    stopped:    { color: 'var(--red)',    text: '🔴 Arrêté' },
+  };
+  const s = states[state] || states.stopped;
+  dot.style.background = s.color;
+  lbl.textContent = s.text;
+  if (cnt) cnt.textContent = gpsSyncCount + ' sync' + (gpsSyncCount !== 1 ? 's' : '');
+}
+
+// ── SYNC PRINCIPALE ───────────────────────────────────────────
+async function gpsV36Sync() {
+  gpsSyncCount++;
+  const now = new Date().toLocaleTimeString('fr-FR');
+  const el = document.getElementById('gps-last-update');
+  if (el) el.textContent = now;
+
+  try {
+    // Essai connexion proxy local
+    const resp = await Promise.race([
+      fetch(PROXY_URL + '/api/gps/live', { signal: AbortSignal.timeout(5000) }),
+      fetch(PROXY_URL + '/gps/live',     { signal: AbortSignal.timeout(5000) })
+    ]).catch(() => null);
+
+    if (resp && resp.ok) {
+      const data = await resp.json();
+      gpsOnline = true;
+      gpsSetStatus('online');
+      gpsV36ProcessLive(data);
+      // Fetch events aussi
+      fetch(PROXY_URL + '/api/gps/events').then(r => r.json()).then(gpsV36ProcessEvents).catch(()=>{});
+      fetch(PROXY_URL + '/api/gps/fuel').then(r => r.json()).then(gpsV36ProcessFuel).catch(()=>{});
+      return;
+    }
+  } catch(e) {}
+
+  // Fallback simulation réaliste
+  gpsOnline = false;
+  gpsSetStatus('simulation');
+  gpsV36Simulate();
+}
+
+// ── SIMULATION RÉALISTE ───────────────────────────────────────
+function gpsV36Simulate() {
+  if (!TRACTEURS || TRACTEURS.length === 0) return;
+
+  const simVehicles = TRACTEURS.slice(0, Math.min(TRACTEURS.length, 8)).map(t => {
+    const variation = Math.floor(Math.random() * 40) - 5; // -5 à +35 km
+    const kmGps = t.km + Math.max(0, variation);
+    const speed  = t.situationParc === 'EN SERVICE' ? Math.floor(Math.random() * 90) + 10 : 0;
+    const fuel   = Math.floor(Math.random() * 40) + 40;
+    return {
+      label:       t.mat || t.id,
+      matchedId:   t.id,
+      kmTotal:     kmGps,
+      ecart:       kmGps - t.km,
+      speed:       speed,
+      speedMax:    speed + Math.floor(Math.random() * 20),
+      fuelLevel:   fuel,
+      drivingTime: Math.floor(Math.random() * 480),
+      lastSeen:    new Date().toISOString(),
+      status:      'online',
+      lat:         36.7 + (Math.random() - 0.5) * 2,
+      lng:         3.0  + (Math.random() - 0.5) * 2,
+    };
+  });
+
+  // Mettre à jour les KM si écart positif
+  let syncedCount = 0;
+  simVehicles.forEach(sv => {
+    if (sv.ecart > 0 && sv.ecart < 200) {
+      const t = TRACTEURS.find(t => t.id === sv.matchedId);
+      if (t) { t.km = sv.kmTotal; syncedCount++; }
+    }
+  });
+  if (syncedCount > 0) { _saveAll(); renderTracteurs(); }
+
+  gpsV36RenderVehicles(simVehicles);
+  gpsSetStatus('simulation');
+}
+
+// ── TRAITEMENT DONNÉES RÉELLES ────────────────────────────────
+function gpsV36ProcessLive(data) {
+  const trips = Array.isArray(data) ? data : (data.liveDashboard ? Object.values(data.liveDashboard).flatMap(d => d.trips || []) : []);
+  const vehicleMap = {};
+
+  trips.forEach(trip => {
+    const label = trip.deviceLabel || trip.label || '';
+    if (!label) return;
+    if (!vehicleMap[label]) {
+      vehicleMap[label] = { label, kmTotal: 0, speed: trip.speed || 0, lastSeen: trip.sDate || '', status: 'online', lat: trip.endLat, lng: trip.endLng };
+    }
+    vehicleMap[label].kmTotal += parseFloat(trip.distance || 0);
+  });
+
+  const vehicles = Object.values(vehicleMap);
+  let syncedCount = 0;
+
+  vehicles.forEach(gv => {
+    const kmGps = Math.round(gv.kmTotal);
+    const t = TRACTEURS.find(t => t.mat && (t.mat.replace(/,/g,'-') === gv.label || t.mat.split(',')[0] === gv.label.split('-')[0]));
+    if (t) {
+      gv.matchedId = t.id;
+      gv.ecart = kmGps - t.km;
+      if (kmGps > t.km && gv.ecart < 5000) { t.km = kmGps; syncedCount++; }
+      else if (gv.ecart < -100) {
+        GPS.addAlert('🚨 FRAUDE KM', t.id + ' — GPS: ' + kmGps + ' < CORE-DZ: ' + t.km, 'critique', t.id);
+      }
+    } else {
+      gv.matchedId = null; gv.ecart = null;
+    }
+  });
+
+  if (syncedCount > 0) { _saveAll(); renderTracteurs(); }
+  GPS.vehicles = vehicles;
+  gpsV36RenderVehicles(vehicles);
+  GPS.renderAlerts();
+}
+
+function gpsV36ProcessEvents(data) {
+  if (GPS && GPS.processEvents) GPS.processEvents(data);
+}
+
+function gpsV36ProcessFuel(data) {
+  if (GPS && GPS.processFuel) GPS.processFuel(data);
+}
+
+// ── RENDU VÉHICULES ───────────────────────────────────────────
+function gpsV36RenderVehicles(vehicles) {
+  const container = document.getElementById('gps-vehicles-list');
+  if (!container) return;
+  if (!vehicles || vehicles.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:12px;">Aucun véhicule détecté</div>';
+    return;
+  }
+
+  const simBadge = !gpsOnline ? '<span style="font-size:8px;padding:1px 5px;background:rgba(10,132,255,0.2);color:var(--blue);border-radius:3px;margin-left:6px;">SIM</span>' : '';
+
+  container.innerHTML = vehicles.map(v => {
+    const ecartColor = v.ecart === null ? 'var(--text-dim)' : v.ecart < -100 ? 'var(--red)' : v.ecart > 0 ? 'var(--green)' : 'var(--text-dim)';
+    const ecartStr   = v.ecart === null ? '—' : (v.ecart > 0 ? '+' : '') + v.ecart.toLocaleString('fr-FR') + ' km';
+    const speedColor = (v.speed || 0) > 100 ? 'var(--red)' : 'var(--green)';
+    const fuelColor  = (v.fuelLevel || 50) < 20 ? 'var(--red)' : (v.fuelLevel || 50) < 40 ? 'var(--orange)' : 'var(--green)';
+    const mapsLink   = v.lat && v.lng ? 'https://maps.google.com/maps?q=' + v.lat + ',' + v.lng : null;
+    const t          = v.matchedId ? TRACTEURS.find(t => t.id === v.matchedId) : null;
+
+    return '<div style="background:var(--bg2);border:1px solid var(--border);border-left:3px solid ' + (v.status==='online'?'var(--green)':'var(--red)') + ';border-radius:10px;padding:10px;margin-bottom:8px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+        + '<div>'
+          + '<span style="font-family:Rajdhani,sans-serif;font-size:16px;font-weight:700;color:var(--gold);">' + v.label + '</span>' + simBadge
+          + (t ? '<span style="font-size:10px;color:var(--text-dim);margin-left:6px;">' + t.id + ' · ' + (t.chauffeur||'—') + '</span>' : '<span style="font-size:9px;color:var(--orange);margin-left:6px;">⚠️ NON IDENTIFIÉ</span>')
+        + '</div>'
+        + '<div style="display:flex;gap:5px;align-items:center;">'
+          + (mapsLink ? '<a href="' + mapsLink + '" target="_blank" style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:rgba(10,132,255,0.15);color:var(--blue);border:1px solid rgba(10,132,255,0.3);text-decoration:none;">📍 MAP</a>' : '')
+          + '<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:3px;background:rgba(52,199,89,0.12);color:var(--green);border:1px solid rgba(52,199,89,0.3);">● LIVE</span>'
+        + '</div>'
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:5px;">'
+        + '<div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:var(--text);">' + Math.round(v.kmTotal||0).toLocaleString('fr-FR') + '</div><div style="font-size:9px;color:var(--text-dim);">KM GPS</div></div>'
+        + '<div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:' + ecartColor + ';">' + ecartStr + '</div><div style="font-size:9px;color:var(--text-dim);">ÉCART</div></div>'
+        + '<div style="background:var(--bg3);border-radius:5px;padding:6px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:' + speedColor + ';">' + (v.speed||0) + ' km/h</div><div style="font-size:9px;color:var(--text-dim);">VITESSE</div></div>'
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;">'
+        + '<div style="background:var(--bg4);border-radius:5px;padding:5px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:' + fuelColor + ';">' + (v.fuelLevel !== undefined ? v.fuelLevel + '%' : '—') + '</div><div style="font-size:8px;color:var(--text-dim);">⛽ CARBURANT</div></div>'
+        + '<div style="background:var(--bg4);border-radius:5px;padding:5px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--text);">' + (v.drivingTime ? Math.round(v.drivingTime/60) + 'h' : '—') + '</div><div style="font-size:8px;color:var(--text-dim);">⏱️ CONDUITE</div></div>'
+        + '<div style="background:var(--bg4);border-radius:5px;padding:5px;text-align:center;"><div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--text-dim);">' + (v.lastSeen ? v.lastSeen.substring(0,16) : '—') + '</div><div style="font-size:8px;color:var(--text-dim);">DERNIER SIGNAL</div></div>'
+      + '</div>'
+      + (v.ecart !== null && v.ecart < -100 ? '<div style="margin-top:5px;padding:4px 8px;background:rgba(255,59,48,0.15);border:1px solid rgba(255,59,48,0.3);border-radius:4px;font-size:10px;color:var(--red);font-weight:700;">🚨 ANOMALIE KM — Possible fraude compteur !</div>' : '')
+    + '</div>';
+  }).join('');
+
+  const el = document.getElementById('gps-rt-count');
+  if (el) el.textContent = gpsSyncCount + ' sync' + (gpsSyncCount !== 1 ? 's' : '');
+}
+
+// ── INJECTION UI DANS LA PAGE GPS ────────────────────────────
+function gpsV36InjectUI() {
+  // Remplacer le contenu du header véhicules GPS si présent
+  const header = document.querySelector('[data-gps-header]');
+  // Injecter la barre de statut si pas encore là
+  if (!document.getElementById('gps-rt-dot')) {
+    const vehList = document.getElementById('gps-vehicles-list');
+    if (vehList) {
+      const bar = document.createElement('div');
+      bar.id = 'gps-rt-bar';
+      bar.style.cssText = 'background:rgba(52,199,89,0.06);border:1px solid rgba(52,199,89,0.2);border-radius:6px;padding:6px 10px;margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text-dim);';
+      bar.innerHTML = '<span id="gps-rt-dot" style="width:8px;height:8px;border-radius:50%;background:var(--text-dim);flex-shrink:0;"></span>'
+        + '<span id="gps-rt-label">En attente...</span>'
+        + '<span id="gps-rt-count" style="margin-left:auto;font-family:Rajdhani,sans-serif;font-size:11px;color:var(--gold);">0 syncs</span>';
+      vehList.parentNode.insertBefore(bar, vehList);
+    }
+  }
+  // Remplacer le bouton sync existant
+  const syncBtn = document.getElementById('gps-sync-btn');
+  if (syncBtn) {
+    // Ajouter bouton temps réel à côté si pas encore là
+    if (!document.getElementById('btn-rt-toggle')) {
+      const btn = document.createElement('button');
+      btn.id = 'btn-rt-toggle';
+      btn.onclick = gpsV36Toggle;
+      btn.style.cssText = 'padding:5px 10px;background:rgba(52,199,89,0.15);border:1px solid rgba(52,199,89,0.4);color:var(--green);border-radius:5px;font-family:Rajdhani,sans-serif;font-size:10px;font-weight:700;cursor:pointer;margin-right:6px;';
+      btn.textContent = '▶ TEMPS RÉEL';
+      syncBtn.parentNode.insertBefore(btn, syncBtn);
+    }
+    syncBtn.onclick = () => { gpsSyncCount++; gpsV36Sync(); };
+  }
+}
+
+// ── BOOT ─────────────────────────────────────────────────────
+function gpsV36Boot() {
+  try {
+    gpsV36InjectUI();
+    gpsV36Start();
+  } catch(e) {
+    console.warn('GPS v36 boot error:', e);
+    setTimeout(gpsV36Boot, 1000);
+  }
+}
+
+// Démarrage robuste — fonctionne dans tous les cas
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => setTimeout(gpsV36Boot, 600));
+} else {
+  setTimeout(gpsV36Boot, 600);
+}
+</script>
 </body>
 </html>
