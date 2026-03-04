@@ -12201,6 +12201,46 @@ function gpsSetStatus(state) {
 }
 
 // ── SYNC PRINCIPALE ───────────────────────────────────────────
+
+/**
+ * Fonction robuste pour parser les données GPS depuis plusieurs formats possibles
+ */
+function parseGPSLiveData(data) {
+  if (!data) return [];
+  
+  // Format 1: Array direct
+  if (Array.isArray(data)) {
+    return data;
+  }
+  
+  // Format 2: data.liveDashboard
+  if (data.liveDashboard) {
+    return Object.values(data.liveDashboard).flatMap(d => d.trips || []);
+  }
+  
+  // Format 3: data.vehicles
+  if (data.vehicles) {
+    const veh = Array.isArray(data.vehicles) ? data.vehicles : Object.values(data.vehicles);
+    return veh;
+  }
+  
+  // Format 4: data.data.vehicles
+  if (data.data && data.data.vehicles) {
+    return Object.values(data.data.vehicles);
+  }
+  
+  // Format 5: Objet clé=ID
+  const keys = Object.keys(data);
+  if (keys.length > 0 && typeof data[keys[0]] === 'object') {
+    const vehicles = Object.values(data).filter(v => v && (v.deviceLabel || v.label || v.mat || v.speed !== undefined));
+    if (vehicles.length > 0) {
+      return vehicles;
+    }
+  }
+  
+  return [];
+}
+
 async function gpsV36Sync() {
   gpsSyncCount++;
   const now = new Date().toLocaleTimeString('fr-FR');
@@ -12222,6 +12262,16 @@ async function gpsV36Sync() {
       // Fetch events aussi
       fetch(PROXY_URL + '/api/gps/events').then(r => r.json()).then(gpsV36ProcessEvents).catch(()=>{});
       fetch(PROXY_URL + '/api/gps/fuel').then(r => r.json()).then(gpsV36ProcessFuel).catch(()=>{});
+      
+      // Scanner les nouveaux véhicules
+      const aiResult = VehicleAI.processGPSVehicles(GPS.vehicles, TRACTEURS);
+      if (aiResult.newCount > 0) {
+        gpsShowNewVehicles(aiResult.newVehicles);
+      }
+      if (aiResult.updatedCount > 0) {
+        console.log('[CORE-DZ] ✅ ' + aiResult.updatedCount + ' KM mis à jour');
+      }
+      
       return;
     }
   } catch(e) {}
@@ -12273,14 +12323,28 @@ function gpsV36Simulate() {
 
 // ── TRAITEMENT DONNÉES RÉELLES ────────────────────────────────
 function gpsV36ProcessLive(data) {
-  const trips = Array.isArray(data) ? data : (data.liveDashboard ? Object.values(data.liveDashboard).flatMap(d => d.trips || []) : []);
+  const trips = parseGPSLiveData(data);
   const vehicleMap = {};
 
+  if (trips.length === 0) {
+    gpsV36RenderVehicles([]);
+    return;
+  }
+
   trips.forEach(trip => {
-    const label = trip.deviceLabel || trip.label || '';
+    const label = trip.deviceLabel || trip.label || trip.mat || trip.name || trip.id || '';
     if (!label) return;
+    
     if (!vehicleMap[label]) {
-      vehicleMap[label] = { label, kmTotal: 0, speed: trip.speed || 0, lastSeen: trip.sDate || '', status: 'online', lat: trip.endLat, lng: trip.endLng };
+      vehicleMap[label] = { 
+        label, 
+        kmTotal: 0, 
+        speed: trip.speed || 0, 
+        lastSeen: trip.sDate || trip.date || '', 
+        status: 'online', 
+        lat: trip.endLat || trip.lat, 
+        lng: trip.endLng || trip.lng 
+      };
     }
     vehicleMap[label].kmTotal += parseFloat(trip.distance || 0);
   });
@@ -12415,6 +12479,346 @@ if (document.readyState === 'loading') {
 } else {
   setTimeout(gpsV36Boot, 600);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODULE IA GRATUIT - Détection et gestion des véhicules
+// ════════════════════════════════════════════════════════════════════════════
+
+function analyzeMatricule(matricule) {
+  if (!matricule) return null;
+  const mat = matricule.replace(/-/g, '').trim();
+  
+  // LOURD (commence par 000)
+  if (mat.startsWith('000')) {
+    const numSerie = mat.substring(3, 6);
+    const yearCode = mat.substring(6, 9);
+    
+    if (!yearCode || yearCode.length < 3) {
+      return { type: 'Lourd', category: 'Indéterminé', year: null };
+    }
+    
+    const decadeDigit = yearCode[0];
+    const yearDigits = yearCode.substring(1, 3);
+    
+    let type = '';
+    if (decadeDigit === '5') type = 'Tracteur';
+    else if (decadeDigit === '8') type = 'Remorque';
+    else type = 'Lourd (type inconnu)';
+    
+    const year = `20${yearDigits}`;
+    
+    return {
+      type: type,
+      category: 'Lourd',
+      year: year,
+      serie: numSerie,
+      matricule: matricule
+    };
+  }
+  
+  // LÉGER
+  else {
+    return {
+      type: 'Véhicule léger',
+      category: 'Léger',
+      year: null,
+      matricule: matricule
+    };
+  }
+}
+
+function scanNewVehicles(gpsVehicles, coreddzTracteurs) {
+  if (!gpsVehicles || !Array.isArray(gpsVehicles)) return [];
+  if (!coreddzTracteurs || !Array.isArray(coreddzTracteurs)) return [];
+  
+  const newVehicles = [];
+  const existingMatricules = coreddzTracteurs.map(t => 
+    (t.mat || '').replace(/,/g, '-').toUpperCase()
+  );
+  
+  gpsVehicles.forEach(gpsVeh => {
+    const label = (gpsVeh.label || gpsVeh.deviceLabel || '').toUpperCase();
+    
+    const exists = existingMatricules.some(existing => 
+      label === existing || label.includes(existing) || existing.includes(label)
+    );
+    
+    if (!exists && label) {
+      const analysis = analyzeMatricule(label);
+      
+      if (analysis) {
+        newVehicles.push({
+          matricule: label,
+          kmGps: Math.round(gpsVeh.kmTotal || 0),
+          speed: gpsVeh.speed || 0,
+          lastSeen: gpsVeh.lastSeen || '',
+          ...analysis,
+          id: `NEW-${label}`,
+          chauffeur: '',
+          situationParc: 'EN ATTENTE',
+          marque: '',
+          modele: '',
+          couleur: '',
+          proprietaire: '',
+          notes: ''
+        });
+      }
+    }
+  });
+  
+  return newVehicles;
+}
+
+function addVehicleToCoreD(vehicle) {
+  if (!vehicle.matricule || vehicle.matricule.trim() === '') {
+    return { success: false, error: 'Matricule requis' };
+  }
+  
+  const matriculeFormatted = vehicle.matricule.replace(/-/g, ',');
+  
+  const newTractor = {
+    id: vehicle.id || `TRACTOR-${Date.now()}`,
+    mat: matriculeFormatted,
+    type: vehicle.type,
+    category: vehicle.category,
+    year: vehicle.year || new Date().getFullYear(),
+    marque: vehicle.marque || '',
+    modele: vehicle.modele || '',
+    couleur: vehicle.couleur || '',
+    chauffeur: vehicle.chauffeur || '',
+    km: vehicle.kmGps || 0,
+    situationParc: vehicle.situationParc || 'EN ATTENTE',
+    proprietaire: vehicle.proprietaire || '',
+    notes: vehicle.notes || `Ajouté auto le ${new Date().toLocaleString('fr-FR')}`,
+    dateAjout: new Date().toISOString()
+  };
+  
+  if (typeof TRACTEURS !== 'undefined' && Array.isArray(TRACTEURS)) {
+    TRACTEURS.push(newTractor);
+    if (typeof _saveAll === 'function') _saveAll();
+    return { success: true, vehicle: newTractor };
+  } else {
+    return { success: false, error: 'TRACTEURS non accessible' };
+  }
+}
+
+function updateKMFromGPS(gpsVehicles) {
+  if (!gpsVehicles || !Array.isArray(gpsVehicles)) return [];
+  if (typeof TRACTEURS === 'undefined') return [];
+  
+  const updated = [];
+  const KM_UPDATE_THRESHOLD = 100;
+  const KM_FRAUD_THRESHOLD = 500;
+  
+  gpsVehicles.forEach(gpsVeh => {
+    const label = (gpsVeh.label || gpsVeh.deviceLabel || '').toUpperCase();
+    const kmGps = Math.round(gpsVeh.kmTotal || 0);
+    
+    const tracteur = TRACTEURS.find(t => 
+      t.mat && t.mat.replace(/,/g, '-').toUpperCase() === label
+    );
+    
+    if (tracteur && kmGps > 0) {
+      const oldKm = tracteur.km || 0;
+      const difference = kmGps - oldKm;
+      
+      if (kmGps > oldKm && difference >= KM_UPDATE_THRESHOLD) {
+        tracteur.km = kmGps;
+        tracteur.lastKMUpdate = new Date().toISOString();
+        
+        updated.push({
+          id: tracteur.id,
+          matricule: tracteur.mat,
+          oldKm: oldKm,
+          newKm: kmGps,
+          difference: difference,
+          timestamp: new Date().toLocaleTimeString('fr-FR')
+        });
+        
+        if (difference < -KM_FRAUD_THRESHOLD) {
+          if (typeof GPS !== 'undefined' && GPS.addAlert) {
+            GPS.addAlert(
+              '🚨 FRAUDE KM',
+              `${tracteur.id}: GPS ${kmGps} < CORE-DZ ${oldKm}`,
+              'critique',
+              tracteur.id
+            );
+          }
+        }
+      }
+    }
+  });
+  
+  if (updated.length > 0) {
+    if (typeof _saveAll === 'function') _saveAll();
+  }
+  
+  return updated;
+}
+
+const VehicleAI = {
+  analyzeMatricule: analyzeMatricule,
+  scanNewVehicles: scanNewVehicles,
+  addVehicleToCoreD: addVehicleToCoreD,
+  updateKMFromGPS: updateKMFromGPS,
+  
+  processGPSVehicles(gpsVehicles, coreddzTracteurs) {
+    const newVehicles = this.scanNewVehicles(gpsVehicles, coreddzTracteurs);
+    const kmUpdates = this.updateKMFromGPS(gpsVehicles);
+    
+    return {
+      newVehicles: newVehicles,
+      kmUpdates: kmUpdates,
+      newCount: newVehicles.length,
+      updatedCount: kmUpdates.length
+    };
+  }
+};
+
 </script>
 </body>
 </html>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// INTERFACE UI - Gestion des nouveaux véhicules détectés
+// ════════════════════════════════════════════════════════════════════════════
+
+function gpsShowNewVehicles(newVehicles) {
+  if (!newVehicles || newVehicles.length === 0) return;
+  
+  const vehiclesHTML = newVehicles.map((veh, idx) => `
+    <div class="new-vehicle-card" data-index="${idx}" style="
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--gold);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      display: grid;
+      gap: 8px;
+    ">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <div style="font-family: Rajdhani; font-size: 16px; font-weight: 700; color: var(--gold);">
+            ${veh.matricule}
+          </div>
+          <div style="font-size: 11px; color: var(--text-dim);">
+            ${veh.type} · ${veh.category} ${veh.year ? '· ' + veh.year : ''}
+          </div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 12px; color: var(--text);">📍 GPS: ${veh.kmGps} km</div>
+          <div style="font-size: 10px; color: var(--text-dim);">${veh.lastSeen}</div>
+        </div>
+      </div>
+      
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+        <input type="text" placeholder="ID" value="${veh.id}" 
+               class="vehicle-id" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+        <input type="text" placeholder="Type" value="${veh.type}" 
+               class="vehicle-type" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+        <input type="text" placeholder="Marque" value="${veh.marque || ''}" 
+               class="vehicle-marque" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+        <input type="text" placeholder="Modèle" value="${veh.modele || ''}" 
+               class="vehicle-modele" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+        <input type="text" placeholder="Chauffeur" value="${veh.chauffeur || ''}" 
+               class="vehicle-chauffeur" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+        <input type="text" placeholder="Propriétaire" value="${veh.proprietaire || ''}" 
+               class="vehicle-proprietaire" style="padding: 6px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font-size: 12px;">
+      </div>
+      
+      <div style="display: flex; gap: 6px;">
+        <button onclick="gpsAddNewVehicle(${idx})" style="flex: 1; padding: 6px 12px; background: rgba(52,199,89,0.2); border: 1px solid rgba(52,199,89,0.4); color: var(--green); border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">
+          ✅ Ajouter
+        </button>
+        <button onclick="gpsSkipVehicle(${idx})" style="flex: 1; padding: 6px 12px; background: rgba(255,59,48,0.15); border: 1px solid rgba(255,59,48,0.3); color: var(--red); border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">
+          ❌ Ignorer
+        </button>
+      </div>
+    </div>
+  `).join('');
+  
+  let container = document.getElementById('gps-new-vehicles-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'gps-new-vehicles-container';
+    container.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 400px;
+      max-height: 500px;
+      background: var(--bg);
+      border: 2px solid var(--gold);
+      border-radius: 10px;
+      padding: 15px;
+      overflow-y: auto;
+      z-index: 1000;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    `;
+    document.body.appendChild(container);
+  }
+  
+  container.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border);">
+      <div style="font-family: Rajdhani; font-size: 14px; font-weight: 700; color: var(--gold);">
+        🚗 ${newVehicles.length} nouveau(x) véhicule(s)
+      </div>
+      <button onclick="document.getElementById('gps-new-vehicles-container').style.display='none'" style="background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px;">✕</button>
+    </div>
+    ${vehiclesHTML}
+  `;
+  
+  window.currentNewVehicles = newVehicles;
+}
+
+function gpsAddNewVehicle(index) {
+  const vehicles = window.currentNewVehicles || [];
+  const vehicle = vehicles[index];
+  if (!vehicle) return;
+  
+  const card = document.querySelector(`.new-vehicle-card[data-index="${index}"]`);
+  if (card) {
+    vehicle.id = card.querySelector('.vehicle-id').value;
+    vehicle.type = card.querySelector('.vehicle-type').value;
+    vehicle.marque = card.querySelector('.vehicle-marque').value;
+    vehicle.modele = card.querySelector('.vehicle-modele').value;
+    vehicle.chauffeur = card.querySelector('.vehicle-chauffeur').value;
+    vehicle.proprietaire = card.querySelector('.vehicle-proprietaire').value;
+  }
+  
+  const result = VehicleAI.addVehicleToCoreD(vehicle);
+  
+  if (result.success) {
+    showToast(`✅ ${vehicle.matricule} ajouté avec succès !`, 'success');
+    vehicles.splice(index, 1);
+    
+    if (vehicles.length > 0) {
+      gpsShowNewVehicles(vehicles);
+    } else {
+      const cont = document.getElementById('gps-new-vehicles-container');
+      if (cont) cont.style.display = 'none';
+    }
+    
+    if (typeof renderTracteurs === 'function') renderTracteurs();
+  } else {
+    showToast(`❌ Erreur: ${result.error}`, 'error');
+  }
+}
+
+function gpsSkipVehicle(index) {
+  const vehicles = window.currentNewVehicles || [];
+  vehicles.splice(index, 1);
+  
+  if (vehicles.length > 0) {
+    gpsShowNewVehicles(vehicles);
+  } else {
+    const cont = document.getElementById('gps-new-vehicles-container');
+    if (cont) cont.style.display = 'none';
+  }
+}
+
+console.log('[CORE-DZ] ✅ Interface Nouveaux Véhicules chargée');
+</script>
+
