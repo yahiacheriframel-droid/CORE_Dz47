@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>CORE-DZ v33 | Gestion de Flotte</title>
+<title>CORE-DZ v33-1 | Gestion de Flotte</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -11295,36 +11295,42 @@ const GPS = {
 
   // ── FETCH CORS-PROXY ───────────────────────────────────────────
   async getSessionCookie() {
-    // Si cookie encore valide (moins de 2h), le réutiliser
     const now = Date.now();
     if (this._sessionCookie && this._sessionExpiry && now < this._sessionExpiry) {
       return this._sessionCookie;
     }
-    // Login automatique via Worker ou corsproxy
-    const loginBody = 'username=' + encodeURIComponent('TRANSIT-PIRAMID-SARL') + '&password=' + encodeURIComponent('Pyramid-Eurl-Transport');
-    const proxyLogin = this.cfg.workerUrl
-      ? this.cfg.workerUrl + '?endpoint=rest/login&method=POST&body=' + encodeURIComponent(loginBody)
-      : 'https://corsproxy.io/?' + encodeURIComponent('https://activegps.algeofleet.com/rest/login');
+    // Essayer corsproxy.io pour le login
+    const proxies = [
+      'https://corsproxy.io/?',
+      'https://api.allorigins.win/raw?url=',
+      'https://cors-anywhere.herokuapp.com/',
+    ];
+    const loginBody = 'username=TRANSIT-PIRAMID-SARL&password=Pyramid-Eurl-Transport';
+    const loginUrl  = 'https://activegps.algeofleet.com/rest/login';
 
-    try {
-      const resp = await fetch(proxyLogin, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: loginBody,
-        credentials: 'omit',
-      });
-      const setCookie = resp.headers.get('set-cookie') || '';
-      const jsession  = setCookie.match(/JSESSIONID=([^;]+)/);
-      const server    = setCookie.match(/SERVER_USED=([^;]+)/);
-      if (jsession) {
-        this._sessionCookie  = 'JSESSIONID=' + jsession[1] + (server ? '; SERVER_USED=' + server[1] : '');
-        this._sessionExpiry  = now + 2 * 60 * 60 * 1000; // 2 heures
-        this.chatAdd('🔑', 'Connexion automatique réussie !', 'success');
-        return this._sessionCookie;
-      }
-    } catch(e) { console.warn('Login error:', e.message); }
-    // Fallback : utiliser cookie manuel si défini
-    return this.cfg.cookie || null;
+    for (const proxy of proxies) {
+      try {
+        const resp = await fetch(proxy + encodeURIComponent(loginUrl), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: loginBody,
+          credentials: 'omit',
+        });
+        const text = await resp.text();
+        // Chercher JSESSIONID dans la réponse ou les headers
+        const jsession = text.match(/JSESSIONID[=:]([^;,\s"]+)/i) || resp.headers.get('set-cookie')?.match(/JSESSIONID=([^;]+)/);
+        const server   = text.match(/SERVER_USED[=:]([^;,\s"]+)/i) || resp.headers.get('set-cookie')?.match(/SERVER_USED=([^;]+)/);
+        if (jsession) {
+          this._sessionCookie = 'JSESSIONID=' + jsession[1] + (server ? '; SERVER_USED=' + server[1] : '');
+          this._sessionExpiry = now + 2 * 60 * 60 * 1000;
+          this.chatAdd('🔑', 'Connexion automatique réussie via ' + proxy.split('/')[2], 'success');
+          return this._sessionCookie;
+        }
+      } catch(e) { continue; }
+    }
+    // Fallback cookie manuel
+    if (this.cfg.cookie) return this.cfg.cookie;
+    return null;
   },
 
   async fetchGPS(endpoint) {
@@ -11334,28 +11340,32 @@ const GPS = {
       'vehiculesId': 'rest/dashboard/vehiculesId',
     };
     const path = endpointMap[endpoint] || endpoint;
+    const fullUrl = 'https://activegps.algeofleet.com/' + path;
 
-    // Obtenir cookie (auto ou manuel)
     const cookie = await this.getSessionCookie();
     if (!cookie) {
       this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
       return null;
     }
 
-    let fetchUrl;
-    if (this.cfg.workerUrl) {
-      fetchUrl = this.cfg.workerUrl + '?cookie=' + encodeURIComponent(cookie) + '&endpoint=' + encodeURIComponent(path);
-    } else {
-      fetchUrl = 'https://corsproxy.io/?' + encodeURIComponent('https://activegps.algeofleet.com/' + path);
+    const proxies = [];
+    if (this.cfg.workerUrl) proxies.push(this.cfg.workerUrl + '?cookie=' + encodeURIComponent(cookie) + '&endpoint=' + encodeURIComponent(path));
+    proxies.push('https://corsproxy.io/?' + encodeURIComponent(fullUrl));
+    proxies.push('https://api.allorigins.win/raw?url=' + encodeURIComponent(fullUrl));
+
+    for (const fetchUrl of proxies) {
+      try {
+        const headers = { 'Accept': 'application/json' };
+        if (!this.cfg.workerUrl || fetchUrl.includes('corsproxy') || fetchUrl.includes('allorigins')) {
+          headers['Cookie'] = cookie;
+        }
+        const res = await fetch(fetchUrl, { credentials: 'omit', headers });
+        if (!res.ok) continue;
+        return await res.json();
+      } catch(e) { continue; }
     }
-    try {
-      const res = await fetch(fetchUrl, { credentials: 'omit' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return await res.json();
-    } catch(e) {
-      console.warn('GPS fetch error:', endpoint, e.message);
-      return null;
-    }
+    console.warn('GPS fetch error: tous les proxies ont échoué');
+    return null;
   },
 
   // ── SYNCHRONISATION PRINCIPALE ─────────────────────────────────
