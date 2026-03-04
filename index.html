@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>CORE-DZ v33-1 | Gestion de Flotte</title>
+<title>CORE-DZ v34 | Gestion de Flotte</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -3305,9 +3305,10 @@ window.addEventListener('load', function() {
         ⚙️ CONFIG GPS ALGEOFLEET
         <button class="btn-close" onclick="document.getElementById('modal-gps-config').classList.remove('open')">✕</button>
       </div>
-      <div style="background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.3);border-radius:8px;padding:12px;margin-bottom:14px;font-size:11px;color:var(--text);line-height:1.7;">
-        🔑 <strong style="color:var(--blue);">Cookie de session requis</strong><br>
-        Connecte-toi sur Algeofleet, ouvre F12 → Network → clique sur n'importe quelle requête → Headers → cherche <strong>Cookie:</strong> et copie la valeur complète.
+      <div style="background:rgba(52,199,89,0.08);border:1px solid rgba(52,199,89,0.3);border-radius:8px;padding:12px;margin-bottom:14px;font-size:11px;color:var(--text);line-height:1.7;">
+        🤖 <strong style="color:var(--green);">CONNEXION AUTOMATIQUE ACTIVÉE</strong><br>
+        Login : <strong>info@piramid-grop.com</strong> — Le robot se connecte seul !<br>
+        Si la connexion auto échoue, collez le cookie manuellement ci-dessous.
       </div>
       <div class="form-group">
         <div class="form-label">🔗 URL DU WORKER CLOUDFLARE (PROXY)</div>
@@ -3315,9 +3316,12 @@ window.addEventListener('load', function() {
         <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Collez ici l'URL de votre Worker Cloudflare</div>
       </div>
       <div class="form-group">
-        <div class="form-label">🍪 COOKIE DE SESSION (JSESSIONID + SERVER_USED)</div>
+        <div class="form-label">🍪 COOKIE MANUEL (optionnel — si connexion auto échoue)</div>
         <textarea class="form-input" id="cfg-gps-cookie" placeholder="JSESSIONID=xxx; SERVER_USED=s1|aada4|aadaYb; ..."
-          style="height:80px;resize:vertical;font-family:monospace;font-size:11px;"></textarea>
+          style="height:60px;resize:vertical;font-family:monospace;font-size:11px;"></textarea>
+        <button onclick="GPS.autoReadCookie()" style="margin-top:6px;width:100%;padding:8px;background:rgba(52,199,89,0.15);border:1px solid var(--green);border-radius:6px;color:var(--green);font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;">
+          🔄 LIRE COOKIE AUTOMATIQUEMENT DEPUIS ACTIVEGPS
+        </button>
       </div>
       <div class="form-group">
         <div class="form-label">⏱️ INTERVALLE DE SYNCHRONISATION</div>
@@ -11293,46 +11297,7 @@ const GPS = {
     this.chatAdd('⏹', 'Synchronisation GPS arrêtée.', 'info');
   },
 
-  // ── FETCH CORS-PROXY ───────────────────────────────────────────
-  async getSessionCookie() {
-    const now = Date.now();
-    if (this._sessionCookie && this._sessionExpiry && now < this._sessionExpiry) {
-      return this._sessionCookie;
-    }
-    // Essayer corsproxy.io pour le login
-    const proxies = [
-      'https://corsproxy.io/?',
-      'https://api.allorigins.win/raw?url=',
-      'https://cors-anywhere.herokuapp.com/',
-    ];
-    const loginBody = 'username=TRANSIT-PIRAMID-SARL&password=Pyramid-Eurl-Transport';
-    const loginUrl  = 'https://activegps.algeofleet.com/rest/login';
-
-    for (const proxy of proxies) {
-      try {
-        const resp = await fetch(proxy + encodeURIComponent(loginUrl), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: loginBody,
-          credentials: 'omit',
-        });
-        const text = await resp.text();
-        // Chercher JSESSIONID dans la réponse ou les headers
-        const jsession = text.match(/JSESSIONID[=:]([^;,\s"]+)/i) || resp.headers.get('set-cookie')?.match(/JSESSIONID=([^;]+)/);
-        const server   = text.match(/SERVER_USED[=:]([^;,\s"]+)/i) || resp.headers.get('set-cookie')?.match(/SERVER_USED=([^;]+)/);
-        if (jsession) {
-          this._sessionCookie = 'JSESSIONID=' + jsession[1] + (server ? '; SERVER_USED=' + server[1] : '');
-          this._sessionExpiry = now + 2 * 60 * 60 * 1000;
-          this.chatAdd('🔑', 'Connexion automatique réussie via ' + proxy.split('/')[2], 'success');
-          return this._sessionCookie;
-        }
-      } catch(e) { continue; }
-    }
-    // Fallback cookie manuel
-    if (this.cfg.cookie) return this.cfg.cookie;
-    return null;
-  },
-
+  // ── FETCH GPS — MULTI-STRATÉGIE ───────────────────────────────
   async fetchGPS(endpoint) {
     const endpointMap = {
       'live':        'rest/dashboard/live',
@@ -11342,36 +11307,147 @@ const GPS = {
     const path = endpointMap[endpoint] || endpoint;
     const fullUrl = 'https://activegps.algeofleet.com/' + path;
 
-    const cookie = await this.getSessionCookie();
-    if (!cookie) {
-      this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
-      return null;
+    // STRATÉGIE 1 — Worker Cloudflare (login auto intégré)
+    if (this.cfg.workerUrl) {
+      try {
+        const cookie = this.cfg.cookie || '';
+        const res = await fetch(this.cfg.workerUrl + '?cookie=' + encodeURIComponent(cookie) + '&endpoint=' + encodeURIComponent(path), { credentials: 'omit' });
+        if (res.ok) return await res.json();
+      } catch(e) {}
     }
 
-    const proxies = [];
-    if (this.cfg.workerUrl) proxies.push(this.cfg.workerUrl + '?cookie=' + encodeURIComponent(cookie) + '&endpoint=' + encodeURIComponent(path));
-    proxies.push('https://corsproxy.io/?' + encodeURIComponent(fullUrl));
-    proxies.push('https://api.allorigins.win/raw?url=' + encodeURIComponent(fullUrl));
+    // STRATÉGIE 2 — Fetch direct avec credentials (même domaine ouvert)
+    if (this.cfg.cookie) {
+      const proxies = [
+        'https://corsproxy.io/?' + encodeURIComponent(fullUrl),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(fullUrl),
+        'https://proxy.cors.sh/' + fullUrl,
+        'https://thingproxy.freeboard.io/fetch/' + fullUrl,
+      ];
+      for (const proxyUrl of proxies) {
+        try {
+          const res = await fetch(proxyUrl, {
+            credentials: 'omit',
+            headers: { 'Cookie': this.cfg.cookie, 'x-requested-with': 'XMLHttpRequest' }
+          });
+          if (res.ok) {
+            const txt = await res.text();
+            if (txt && txt.startsWith('{')) return JSON.parse(txt);
+          }
+        } catch(e) { continue; }
+      }
+    }
 
-    for (const fetchUrl of proxies) {
+    // STRATÉGIE 3 — Iframe bridge (si ActiveGPS ouvert dans le navigateur)
+    try {
+      const data = await this.fetchViaIframe(fullUrl);
+      if (data) return data;
+    } catch(e) {}
+
+    if (!this.cfg.cookie && !this.cfg.workerUrl) {
+      this.chatAdd('⚠️', 'Connexion GPS impossible. Configure ton cookie de session dans ⚙️', 'warn');
+    }
+    return null;
+  },
+
+  // ── LECTURE COOKIE AUTOMATIQUE ────────────────────────────────
+  autoReadCookie() {
+    // Ouvrir ActiveGPS et récupérer le cookie
+    const win = window.open('https://activegps.algeofleet.com/dashbord.xhtml', 'activegps_win');
+    this.chatAdd('🔑', 'Ouverture ActiveGPS pour récupérer le cookie...', 'info');
+    let tries = 0;
+    const check = setInterval(() => {
+      tries++;
       try {
-        const headers = { 'Accept': 'application/json' };
-        if (!this.cfg.workerUrl || fetchUrl.includes('corsproxy') || fetchUrl.includes('allorigins')) {
-          headers['Cookie'] = cookie;
+        const cookie = win.document.cookie;
+        if (cookie && cookie.includes('JSESSIONID')) {
+          clearInterval(check);
+          win.close();
+          this.cfg.cookie = cookie;
+          const el = document.getElementById('cfg-gps-cookie');
+          if (el) el.value = cookie;
+          this.chatAdd('✅', 'Cookie récupéré automatiquement !', 'success');
         }
-        const res = await fetch(fetchUrl, { credentials: 'omit', headers });
-        if (!res.ok) continue;
-        return await res.json();
+      } catch(e) {}
+      if (tries > 20) {
+        clearInterval(check);
+        this.chatAdd('⚠️', 'Impossible de lire le cookie automatiquement. Copiez-le manuellement.', 'warn');
+      }
+    }, 500);
+  },
+
+  // ── AUTO LOGIN SANS PROXY ─────────────────────────────────────
+  async autoLogin() {
+    // Essayer de se connecter via fetch direct (marche si même réseau)
+    const proxies = [
+      'https://corsproxy.io/?',
+      'https://api.allorigins.win/raw?url=',
+      'https://proxy.cors.sh/',
+      'https://thingproxy.freeboard.io/fetch/',
+    ];
+    const loginUrl = 'https://activegps.algeofleet.com/rest/login';
+    const body = 'username=info%40piramid-grop.com&password=Pyramid-Eurl-Transport';
+
+    for (const proxy of proxies) {
+      try {
+        const resp = await fetch(proxy + encodeURIComponent(loginUrl), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+          credentials: 'omit',
+        });
+        const txt = await resp.text();
+        const jsession = txt.match(/JSESSIONID=([^;,"'\s]+)/) || resp.headers.get('set-cookie')?.match(/JSESSIONID=([^;]+)/);
+        const server   = txt.match(/SERVER_USED=([^;,"'\s]+)/) || resp.headers.get('set-cookie')?.match(/SERVER_USED=([^;]+)/);
+        if (jsession) {
+          const cookie = 'JSESSIONID=' + jsession[1] + (server ? '; SERVER_USED=' + server[1] : '');
+          this.cfg.cookie = cookie;
+          this._sessionCookie = cookie;
+          this._sessionExpiry = Date.now() + 2 * 60 * 60 * 1000;
+          this.chatAdd('🔑', 'Connexion automatique réussie !', 'success');
+          return cookie;
+        }
       } catch(e) { continue; }
     }
-    console.warn('GPS fetch error: tous les proxies ont échoué');
     return null;
+  },
+  fetchViaIframe(url) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(null), 8000);
+      const handler = (e) => {
+        if (e.data && e.data.type === 'GPS_DATA') {
+          clearTimeout(timeout);
+          window.removeEventListener('message', handler);
+          resolve(e.data.payload);
+        }
+      };
+      window.addEventListener('message', handler);
+      // Chercher iframe ActiveGPS existante
+      let iframe = document.getElementById('gps-bridge-frame');
+      if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.id = 'gps-bridge-frame';
+        iframe.style.display = 'none';
+        iframe.src = 'https://activegps.algeofleet.com/dashbord.xhtml';
+        document.body.appendChild(iframe);
+      }
+      iframe.onload = () => {
+        try {
+          iframe.contentWindow.postMessage({ type: 'FETCH_GPS', url }, 'https://activegps.algeofleet.com');
+        } catch(e) { resolve(null); }
+      };
+    });
   },
 
   // ── SYNCHRONISATION PRINCIPALE ─────────────────────────────────
   async sync() {
     this.chatAdd('📡', 'Synchronisation GPS en cours...', 'info');
     const now = new Date().toLocaleTimeString('fr-FR');
+
+    // Auto login si pas de cookie valide
+    if (!this.cfg.cookie && !this._sessionCookie) {
+      await this.autoLogin();
+    }
 
     // Fetch parallèle de tous les endpoints
     const [liveData, eventsData, vehiclesData] = await Promise.all([
