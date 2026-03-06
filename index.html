@@ -3213,6 +3213,10 @@ window.addEventListener('load', function() {
         style="padding:9px 12px;background:rgba(52,199,89,0.15);border:1px solid var(--green);border-radius:8px;color:var(--green);font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">
         ▶ ACTIVER
       </button>
+      <button onclick="sheetDiagnostic()"
+        style="padding:9px 10px;background:rgba(10,132,255,0.15);border:1px solid var(--blue);border-radius:8px;color:var(--blue);font-size:12px;cursor:pointer;" title="Voir ce que l'app lit du sheet">
+        🔍
+      </button>
     </div>
     <!-- Barre de statut live -->
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:7px 10px;background:rgba(52,199,89,0.06);border:1px solid rgba(52,199,89,0.15);border-radius:8px;">
@@ -10473,10 +10477,9 @@ function renderMaintenancePanel() {
 // Modèle : llama-3.3-70b-versatile
 // Clé : stockée dans le proxy /groq-key ou variable LS
 // ═══════════════════════════════════════════════════════
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'; // ultra-rapide ~200 tok/s
 
-async function callGroq({ system, messages, max_tokens = 1000 }) {
-  // Récupérer la clé depuis le proxy ou localStorage
+async function callGroq({ system, messages, max_tokens = 8000, onStream = null }) {
   let apiKey = window._groqKey;
   if (!apiKey) {
     try {
@@ -10485,16 +10488,15 @@ async function callGroq({ system, messages, max_tokens = 1000 }) {
     } catch(e) {}
   }
   if (!apiKey) apiKey = localStorage.getItem('groq_api_key') || '';
-  if (!apiKey) apiKey = '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'; // clé intégrée
+  if (!apiKey) apiKey = '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';
 
-  if (!apiKey) {
-    return { ok: false, text: '⚠️ Clé Groq manquante.' };
-  }
+  if (!apiKey) return { ok: false, text: '⚠️ Clé Groq manquante.' };
 
-  // Construire les messages (system prompt en tête)
   const msgs = system
     ? [{ role: 'system', content: system }, ...messages]
     : messages;
+
+  const useStream = !!onStream;
 
   try {
     const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -10506,9 +10508,41 @@ async function callGroq({ system, messages, max_tokens = 1000 }) {
       body: JSON.stringify({
         model: GROQ_MODEL,
         max_tokens,
+        stream: useStream,
         messages: msgs
       })
     });
+
+    // ── Mode streaming : affichage mot par mot ──
+    if (useStream && resp.body) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.replace(/^data: /, '').trim();
+          if (!trimmed || trimmed === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(trimmed);
+            const delta = chunk.choices?.[0]?.delta?.content || '';
+            if (delta) {
+              fullText += delta;
+              onStream(fullText);
+            }
+          } catch(e) {}
+        }
+      }
+      return { ok: true, text: fullText };
+    }
+
+    // ── Mode normal ──
     const data = await resp.json();
     if (data.error) return { ok: false, text: '⚠️ Groq: ' + (data.error.message || 'Erreur API') };
     const text = data.choices?.[0]?.message?.content || '';
@@ -10706,15 +10740,26 @@ async function sendMessage() {
   iaClearMediaPreview();
 
   try {
+    // Créer le message IA vide pour le remplir en streaming
+    const streamMsgId = 'stream-' + Date.now();
+    removeLoading(loadingId);
+    appendMsg('chat-messages', 'ai', '▋', streamMsgId);
+
     const result = await callGroq({
       system: getIASystemPrompt(),
       messages: toGroqMessages(chatHistory),
-      max_tokens: 1500
+      max_tokens: 8000,
+      onStream: function(text) {
+        var el = document.getElementById(streamMsgId);
+        if (el) el.innerHTML = formatMsg(text) + '<span style="opacity:0.5;">▋</span>';
+        var container = document.getElementById('chat-messages');
+        if (container) container.scrollTop = container.scrollHeight;
+      }
     });
     const reply = result.text || 'Erreur API.';
     chatHistory.push({role:'assistant', content: reply});
-    removeLoading(loadingId);
-    appendMsg('chat-messages', 'ai', reply);
+    var el = document.getElementById(streamMsgId);
+    if (el) el.innerHTML = formatMsg(reply);
     iaSetPulse(true);
   } catch(e) {
     removeLoading(loadingId);
@@ -10755,7 +10800,7 @@ async function sendMessageC() {
     const result = await callGroq({
       system: getIASystemPromptChauffeur(),
       messages: toGroqMessages(chatHistoryC),
-      max_tokens: 1000
+      max_tokens: 8000
     });
     const reply = result.text || 'Erreur.';
     chatHistoryC.push({role:'assistant', content:reply});
@@ -10793,15 +10838,24 @@ function appendMsgUser(containerId, text, media) {
   container.scrollTop = container.scrollHeight;
 }
 
-function appendMsg(containerId, role, text) {
+function formatMsg(text) {
+  return (text||'').replace(/</g,'&lt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong style="color:var(--gold)">$1</strong>');
+}
+
+function appendMsg(containerId, role, text, msgId) {
   const container = document.getElementById(containerId);
   if(!container) return;
   const div = document.createElement('div');
   div.className = 'chat-msg' + (role === 'user' ? ' user' : '');
+  if (msgId) div.id = msgId;
   const avatarHTML = role === 'ai'
     ? `<div class="chat-avatar" style="background:linear-gradient(135deg,var(--gold-dark),var(--gold));">🦁</div>`
     : `<div class="chat-avatar">👤</div>`;
-  div.innerHTML = `${avatarHTML}<div class="chat-bubble">${text.replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong style="color:var(--gold)">$1</strong>')}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.innerHTML = formatMsg(text);
+  div.appendChild(role === 'ai' ? document.createRange().createContextualFragment(avatarHTML) : document.createRange().createContextualFragment(avatarHTML));
+  div.appendChild(bubble);
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
   return div;
@@ -11331,7 +11385,7 @@ window.sendMessageC = async function() {
     iaMediaDataC = null;
     iaClearMediaC();
     try {
-      const result = await callGroq({system:getIASystemPromptChauffeur(),messages:toGroqMessages(chatHistoryC),max_tokens:1000});
+      const result = await callGroq({system:getIASystemPromptChauffeur(),messages:toGroqMessages(chatHistoryC),max_tokens:8000});
       const reply = result.text||'Erreur.';
       chatHistoryC.push({role:'assistant',content:reply});
       removeLoading(loadingId);
@@ -13620,7 +13674,7 @@ const GPS = {
       const prompt = `Tu es le robot GPS CORE-DZ. Analyse ces résultats de synchronisation KM:
 ${JSON.stringify(results)}
 Donne un résumé d'analyse en 3-5 lignes: risques fraude, recommandations, actions immédiates. Sois direct et précis.`;
-      const result = await callGroq({ messages: [{ role: 'user', content: prompt }], max_tokens: 400 });
+      const result = await callGroq({ messages: [{ role: 'user', content: prompt }], max_tokens: 4000 });
       if (result.text) this.chatAdd('🧠', result.text, 'ai');
     } catch(e) {}
   },
@@ -15581,7 +15635,7 @@ async function portailAnalyseIA(doc) {
         headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+apiKey },
         body: JSON.stringify({
           model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-          max_tokens: 600,
+          max_tokens: 4000,
           messages: [{
             role: 'user',
             content: [
@@ -15619,7 +15673,7 @@ async function portailAnalyseIA(doc) {
              + 'Réponds en JSON: { resume, infos_utiles[], actions_suggerees[] }';
     }
 
-    var result = await callGroq({ system: FLEET_CONTEXT, messages:[{ role:'user', content: prompt }], max_tokens: 800 });
+    var result = await callGroq({ system: FLEET_CONTEXT, messages:[{ role:'user', content: prompt }], max_tokens: 6000 });
     doc.iaResume = result.ok ? result.text : 'Analyse indisponible';
   }
 
@@ -15889,7 +15943,7 @@ async function planningIAPlanifier() {
     + 'Réponds UNIQUEMENT en JSON valide:\n'
     + '{ "semaines": [ { "semaine": "S1 - 10/03 au 14/03", "taches": [ { "jour": "Lundi 10/03", "vehicule": "T01", "organe": "VIDANGE", "urgence": "CRITIQUE", "duree": "4h", "statut": "planifie" } ] } ], "resume": "..." } }';
 
-  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user', content: promptIA}], max_tokens: 2000 });
+  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user', content: promptIA}], max_tokens: 8000 });
 
   if (!result.ok) {
     if (panel) panel.innerHTML = '<div style="color:var(--red);padding:12px;">⚠️ ' + result.text + '</div>';
@@ -16073,7 +16127,7 @@ async function planningReplanifier(tache) {
     + '\n\nPropose 2-3 nouveaux créneaux réalistes dans les 7 prochains jours (à partir du ' + today + ').\n'
     + 'Réponds en JSON: { "nouveaux_creneaux": [ { "jour": "...", "heure": "...", "note": "..." } ], "recommandation": "..." }';
 
-  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user', content:prompt}], max_tokens:600 });
+  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user', content:prompt}], max_tokens:4000 });
 
   if (!result.ok) { showToast('⚠️ Replanification impossible'); return; }
 
@@ -16155,7 +16209,7 @@ async function visionReconnaittreMatricule(dataUrl, contexte) {
       headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+apiKey },
       body: JSON.stringify({
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        max_tokens: 400,
+        max_tokens: 4000,
         messages: [{ role:'user', content: [
           { type:'image_url', image_url: { url: dataUrl } },
           { type:'text', text: prompt }
@@ -16355,7 +16409,7 @@ async function exportRapportHebdo() {
     + '\n\nGénère un rapport structuré avec: résumé exécutif, alertes prioritaires, maintenances effectuées, recommandations pour la semaine prochaine.\n'
     + 'Réponds en texte formaté (pas JSON), professionnel, en français.';
 
-  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user',content:prompt}], max_tokens:1500 });
+  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user',content:prompt}], max_tokens:8000 });
   var rapportTxt = result.ok ? result.text : 'Rapport généré localement:\n\n' + flotteResume;
 
   // Générer HTML téléchargeable
@@ -16442,7 +16496,7 @@ async function exportDevisMaintenance() {
     + '\n\nTotal estimé: ' + Math.round(totalMin).toLocaleString('fr-FR') + ' — ' + Math.round(totalMax).toLocaleString('fr-FR') + ' DA\n\n'
     + 'Présente ce devis de façon professionnelle avec conseils de priorisation et note sur les prix DZ actuels.';
 
-  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user',content:prompt}], max_tokens:1000 });
+  var result = await callGroq({ system: FLEET_CONTEXT, messages:[{role:'user',content:prompt}], max_tokens:8000 });
 
   if (el) {
     el.style.display = 'block';
@@ -16818,7 +16872,7 @@ async function sheetFetchRobust(targetUrl) {
 // ══════════════════════════════════════════════════════════════
 async function sheetGetFeuilles(sheetId) {
 
-  // ── Méthode 1 : feeds/worksheets → liste complète des onglets ──
+  // ── Méthode 1 : feeds/worksheets → liste COMPLÈTE des onglets ──
   try {
     var feedUrl = 'https://spreadsheets.google.com/feeds/worksheets/' + sheetId + '/public/basic?alt=json';
     var r = await fetch(feedUrl);
@@ -16827,26 +16881,24 @@ async function sheetGetFeuilles(sheetId) {
       var entries = json.feed && json.feed.entry ? json.feed.entry : [];
       if (entries.length > 0) {
         var names = entries.map(function(e) {
-          var nom = e.title && e.title['$t'] ? e.title['$t'] : '';
-          // Extraire le GID depuis le lien de la feuille
+          var nom = (e.title && e.title['$t'] ? e.title['$t'] : '').trim();
           var gid = '';
-          var links = e.link || [];
-          for (var i = 0; i < links.length; i++) {
-            var href = links[i].href || '';
-            var m = href.match(/gid=(\d+)/);
-            if (m) { gid = m[1]; break; }
-            // Format alternatif: /worksheets/.../private/full/WORKSHEETID
-            var m2 = href.match(/\/(\d+)$/);
-            if (m2) { gid = m2[1]; break; }
-          }
-          // Si pas de GID dans les liens, extraire de l'id
+          // Chercher le GID dans TOUS les liens de l'entrée
+          (e.link || []).forEach(function(l) {
+            var href = l.href || '';
+            var m = href.match(/[?&]gid=(\d+)/);
+            if (m && !gid) gid = m[1];
+          });
+          // Fallback: dernier segment de l'ID
           if (!gid && e.id && e.id['$t']) {
-            var m3 = e.id['$t'].match(/\/([^\/]+)$/);
-            if (m3) gid = m3[1];
+            var segs = e.id['$t'].split('/');
+            var last = segs[segs.length - 1];
+            if (/^\d+$/.test(last)) gid = last;
           }
           return { nom: nom, gid: gid };
         });
-        console.log('[CORE-DZ] feeds/worksheets →', names.map(function(n){ return '"'+n.nom+'"(gid='+n.gid+')'; }).join(', '));
+        console.log('[CORE-DZ] feeds/worksheets: ' + names.length + ' feuilles →',
+          names.map(function(n){ return '"'+n.nom+'"('+n.gid+')'; }).join(', '));
         return names;
       }
     }
@@ -16854,12 +16906,38 @@ async function sheetGetFeuilles(sheetId) {
     console.warn('[CORE-DZ] feeds/worksheets échoué:', e.message);
   }
 
-  // ── Méthode 2 : brute-force gviz par GID 0→80 ──
-  // Chaque GID valide retourne du CSV, les GID invalides retournent une erreur HTML
-  console.warn('[CORE-DZ] Fallback brute-force GID 0-80');
-  var fallback = [];
-  for (var g = 0; g <= 80; g++) fallback.push({ nom: null, gid: String(g) });
-  return fallback;
+  // ── Méthode 2 : brute-force GID 0→100 en parallèle ──
+  console.warn('[CORE-DZ] Fallback brute-force GID 0-100');
+  var found = [];
+  var batchSize = 15;
+
+  for (var start = 0; start <= 100; start += batchSize) {
+    var batch = [];
+    for (var g = start; g < start + batchSize && g <= 100; g++) batch.push(g);
+
+    var results = await Promise.allSettled(batch.map(function(gid) {
+      var url = 'https://docs.google.com/spreadsheets/d/' + sheetId + '/gviz/tq?tqx=out:csv&gid=' + gid;
+      return fetch(url).then(function(r) {
+        if (!r.ok) return null;
+        return r.text().then(function(t) {
+          if (!t || t.length < 10 || t.trim().startsWith('<')) return null;
+          return { gid: String(gid), nom: null };
+        });
+      }).catch(function(){ return null; });
+    }));
+
+    var anyValid = false;
+    results.forEach(function(res) {
+      if (res.status === 'fulfilled' && res.value) {
+        anyValid = true;
+        found.push(res.value);
+      }
+    });
+    if (!anyValid && start > 20) break;
+  }
+
+  console.log('[CORE-DZ] Brute-force: ' + found.length + ' GIDs valides');
+  return found;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -17096,6 +17174,25 @@ async function planningImportGSheet() {
       continue;
     }
 
+    // Si nom pas connu (brute-force), chercher une date dans les premières cellules
+    if (!feuilleNom) {
+      var found = false;
+      for (var ri = 0; ri < Math.min(rows.length, 3) && !found; ri++) {
+        for (var ci = 0; ci < Math.min((rows[ri]||[]).length, 5) && !found; ci++) {
+          var cell = (rows[ri][ci] || '').trim();
+          if (cell && parseDateFeuille(cell)) {
+            feuilleNom = cell;
+            found = true;
+          }
+        }
+      }
+      // Si toujours pas trouvé → ignorer cette feuille
+      if (!feuilleNom) {
+        debugLog.push('GID ' + sheet.gid + ': pas de date trouvée dans le contenu');
+        continue;
+      }
+    }
+
     var feuilleNom = (sheet.nom || '').trim();
     var parsed = sheetParseFeuille(rows, feuilleNom);
     if (!parsed) {
@@ -17221,6 +17318,56 @@ _autoMaintPlan.forEach(function(t) {
 });
 
 // ── Démarrer le système vivant ──
+// ── Diagnostic sheet visible à l'écran ──
+async function sheetDiagnostic() {
+  var resumeEl = document.getElementById('planning-import-resume');
+  if (!resumeEl) return;
+  resumeEl.style.display = 'block';
+  resumeEl.innerHTML = '<span style="color:var(--text-dim);">⏳ Diagnostic en cours...</span>';
+  var sheetId = '1it48n0PpE-pqIjaKhzyFX6APAsI_YPYYXwKumE1vNoA';
+  var html = '<div style="font-size:11px;">';
+
+  // Test 1 : feeds/worksheets
+  try {
+    var r = await fetch('https://spreadsheets.google.com/feeds/worksheets/' + sheetId + '/public/basic?alt=json');
+    if (r.ok) {
+      var json = await r.json();
+      var entries = json.feed && json.feed.entry ? json.feed.entry : [];
+      html += '<b style="color:var(--green);">✅ feeds/worksheets : ' + entries.length + ' feuilles</b><br>';
+      entries.forEach(function(e) {
+        var nom = e.title && e.title['$t'] ? e.title['$t'] : '?';
+        var gid = '';
+        (e.link||[]).forEach(function(l){ var m=(l.href||'').match(/[?&]gid=(\d+)/); if(m&&!gid)gid=m[1]; });
+        if(!gid && e.id && e.id['$t']){ var s=e.id['$t'].split('/'); gid=s[s.length-1]; }
+        html += '&nbsp;&nbsp;' + (parseDateFeuille(nom)?'✅':'❌') + ' "' + nom + '" GID=' + gid + '<br>';
+      });
+    } else {
+      html += '<b style="color:var(--red);">❌ feeds/worksheets HTTP ' + r.status + '</b><br>';
+    }
+  } catch(e) { html += '<b style="color:var(--red);">❌ feeds/worksheets : ' + e.message + '</b><br>'; }
+
+  // Test 2 : lire CSV GID=0
+  try {
+    var r2 = await fetch('https://docs.google.com/spreadsheets/d/' + sheetId + '/gviz/tq?tqx=out:csv&gid=0');
+    if (r2.ok) {
+      var t = await r2.text();
+      if (t && !t.trim().startsWith('<')) {
+        html += '<b style="color:var(--green);">✅ gviz CSV GID=0 OK</b><br>';
+        html += '<span style="font-size:9px;color:var(--text-dim);">' + t.substring(0,200).replace(/</g,'&lt;') + '</span><br>';
+      } else { html += '<b style="color:var(--red);">❌ gviz GID=0 retourne HTML</b><br>'; }
+    }
+  } catch(e) { html += '<b style="color:var(--red);">❌ gviz : ' + e.message + '</b><br>'; }
+
+  // Test 3 : PLANNING_COMMANDES actuel
+  if (typeof PLANNING_COMMANDES !== 'undefined' && PLANNING_COMMANDES && PLANNING_COMMANDES.feuilles) {
+    var ff = PLANNING_COMMANDES.feuilles;
+    html += '<b style="color:var(--gold);">📋 ' + ff.length + ' feuilles chargées</b><br>';
+    ff.forEach(function(f){ html += '&nbsp;&nbsp;📅 ' + (f.dateStr||f.nom) + ' → ' + f.courses.length + '🚛 ' + f.disponibles.length + '💤<br>'; });
+  } else { html += '<b style="color:var(--red);">❌ PLANNING_COMMANDES vide</b><br>'; }
+
+  resumeEl.innerHTML = html + '</div>';
+}
+
 function liveSystemStart(sheetUrl) {
   if (sheetUrl) {
     _liveSheetUrl = sheetUrl;
