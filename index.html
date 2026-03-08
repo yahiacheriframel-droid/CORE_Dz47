@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>CORE-DZ v47 | Gestion de Flotte</title>
+<title>CORE-DZ v36 | Gestion de Flotte</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -167,7 +167,9 @@ body {
 /* CONTENT */
 .content {
   flex:1;
+  min-height:0; /* ← FIX: permet le scroll en contexte flexbox */
   overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
   padding:12px;
   scrollbar-width:thin;
   scrollbar-color: var(--gold-dark) var(--bg2);
@@ -1045,8 +1047,8 @@ class CoreDzDB {
       localStorage.setItem(this.storageKey, JSON.stringify(this.db));
       this.db.metadata.operations++;
 
-      // ☁️ Sync Firebase aussi (via le système principal)
-      if (typeof _saveAll === 'function') _saveAll();
+      // ☁️ Sync Firebase — via _saveAll() SAUF si déjà appelé depuis _saveAllLocal (éviter boucle)
+      if (typeof _saveAll === 'function' && !window._inSaveLocal) _saveAll();
 
       return { success: true };
     } catch (e) {
@@ -2279,6 +2281,10 @@ window.addEventListener('load', function() {
     <div class="nav-item" onclick="showPage('ref-rem')">
       <span class="nav-item-icon">🔗</span>
       <span class="nav-item-label">RÉF. REMORQUE</span>
+    </div>
+    <div class="nav-item" onclick="showPage('ref-vl')">
+      <span class="nav-item-icon">🚗</span>
+      <span class="nav-item-label">RÉF. VL</span>
     </div>
     <div class="nav-item" onclick="showPage('innovation')">
       <span class="nav-item-icon">🏆</span>
@@ -4310,9 +4316,28 @@ window.addEventListener('load', function() {
     <div id="ref-rem-list"></div>
   </div>
 
+  <!-- PAGE: REF TECHNIQUE VL -->
+  <div class="page" id="page-ref-vl">
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+      <button onclick="showPage('vl')" style="padding:8px 12px;background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);border-radius:8px;font-size:12px;cursor:pointer;">◀ Retour VL</button>
+      <div style="flex:1;font-family:Rajdhani,sans-serif;font-size:16px;font-weight:700;color:var(--gold);">📖 RÉFÉRENTIEL TECHNIQUE — VÉHICULES LÉGERS</div>
+    </div>
+    <div style="position:relative;margin-bottom:10px;">
+      <input type="text" class="search-input" id="ref-vl-search" placeholder="🔍 Rechercher: huile, freins, pneus, filtres..." oninput="searchRefVL(this.value)"
+        style="width:100%;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;outline:none;">
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;" id="ref-vl-type-tabs">
+      <button class="filter-btn active" onclick="filterRefVL('all',this)">TOUT</button>
+      <button class="filter-btn" onclick="filterRefVL('fourgon',this)">🚐 FOURGON</button>
+      <button class="filter-btn" onclick="filterRefVL('voiture',this)">🚗 VOITURE</button>
+      <button class="filter-btn" onclick="filterRefVL('commun',this)">🔧 COMMUN</button>
+    </div>
+    <div id="ref-vl-list"></div>
+  </div>
+
   <!-- PAGE: IA ASSISTANT (ADMIN) -->
   <div class="page" id="page-ia">
-    <div id="ia-container" style="display:flex;flex-direction:column;height:calc(100vh - 200px); min-height:300px;">
+    <div id="ia-container" style="display:flex;flex-direction:column;height:calc(100vh - 130px);min-height:400px;">
 
       <!-- En-tête IA vivante -->
       <div style="background:linear-gradient(135deg,rgba(201,168,76,0.12),rgba(10,132,255,0.08));border:1px solid rgba(201,168,76,0.25);border-radius:12px;padding:12px 14px;margin-bottom:10px;flex-shrink:0;">
@@ -4471,7 +4496,7 @@ window.addEventListener('load', function() {
 
   <!-- PAGE: CHAUFFEUR - IA -->
   <div class="page" id="page-c-ia">
-    <div id="c-ia-container" style="display:flex;flex-direction:column;height:calc(100vh - 200px); min-height:300px;">
+    <div id="c-ia-container" style="display:flex;flex-direction:column;height:calc(100vh - 130px);min-height:400px;">
 
       <!-- En-tête IA chauffeur -->
       <div style="background:linear-gradient(135deg,rgba(52,199,89,0.1),rgba(10,132,255,0.06));border:1px solid rgba(52,199,89,0.25);border-radius:12px;padding:10px 14px;margin-bottom:8px;flex-shrink:0;">
@@ -4534,13 +4559,38 @@ window.addEventListener('load', function() {
 
   <!-- PAGE: VÉHICULES LÉGERS -->
   <div class="page" id="page-vl">
-    <div class="section-title">🚗 VÉHICULES LÉGERS</div>
-    <div style="display:flex;gap:8px;margin-bottom:10px;">
-      <button onclick="openAddVL()" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--gold-dark),var(--gold));color:var(--bg);border:none;border-radius:8px;font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ AJOUTER VÉHICULE</button>
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <button onclick="openAddVL()" style="flex:1;padding:10px 8px;background:linear-gradient(135deg,var(--gold-dark),var(--gold));color:var(--bg);border:none;border-radius:8px;font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:1px;">➕ AJOUTER</button>
+      <button onclick="showPage('ref-vl')" style="flex:1;padding:10px 8px;background:rgba(10,132,255,0.15);border:1px solid var(--blue);color:var(--blue);border-radius:8px;font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:1px;">📖 REF TECH VL</button>
     </div>
-    <input type="text" id="search-vl" placeholder="🔍 Rechercher..." oninput="renderVehiculesLegers(this.value)"
-      style="width:100%;padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;margin-bottom:10px;outline:none;">
+    <div style="position:relative;margin-bottom:10px;">
+      <input type="text" id="search-vl" placeholder="🔍 Rechercher ID, matricule, chauffeur..." oninput="searchVL(this.value)"
+        style="width:100%;padding:10px 36px 10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;outline:none;">
+      <span onclick="document.getElementById('search-vl').value='';renderVehiculesLegers()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-dim);font-size:16px;">✕</span>
+    </div>
+    <div class="filter-row" style="margin-bottom:10px;">
+      <button class="filter-btn active" id="vl-filter-all"    onclick="filterVL('all',this)">TOUS</button>
+      <button class="filter-btn"        id="vl-filter-ok"     onclick="filterVL('ok',this)">🟢 OK</button>
+      <button class="filter-btn"        id="vl-filter-alerte" onclick="filterVL('alerte',this)">🟡 ALERTE</button>
+      <button class="filter-btn"        id="vl-filter-stop"   onclick="filterVL('stop',this)">🔴 STOP</button>
+      <button class="filter-btn"        id="vl-filter-fourgon" onclick="filterVL('fourgon',this)">🚐 FOURGON</button>
+      <button class="filter-btn"        id="vl-filter-voiture" onclick="filterVL('voiture',this)">🚗 VOITURE</button>
+    </div>
     <div id="vl-list"></div>
+  </div>
+
+  <!-- DETAIL PANEL VL -->
+  <div class="detail-overlay" id="vl-detail-overlay" onclick="if(event.target===this)this.classList.remove('open')">
+    <div class="detail-panel" id="vl-detail-panel">
+      <div class="detail-header">
+        <div>
+          <div class="detail-title" id="vl-detail-title">—</div>
+          <div class="detail-sub" id="vl-detail-sub">—</div>
+        </div>
+        <button class="btn-close" onclick="document.getElementById('vl-detail-overlay').classList.remove('open')">✕</button>
+      </div>
+      <div class="detail-body" id="vl-detail-body"></div>
+    </div>
   </div>
 
 
@@ -7133,72 +7183,297 @@ function calcVerdictVL(v) {
   return 'ok';
 }
 
-function renderVehiculesLegers(search) {
+let _vlFilter = 'all';
+let _vlSearch = '';
+
+function filterVL(filter, btn) {
+  _vlFilter = filter;
+  if(btn) {
+    document.querySelectorAll('[id^="vl-filter-"]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  renderVehiculesLegers();
+}
+
+function searchVL(q) {
+  _vlSearch = q;
+  renderVehiculesLegers();
+}
+
+function renderVehiculesLegers() {
   const el = document.getElementById('vl-list');
   if(!el) return;
-  const q = (search||'').toLowerCase();
-  const list = VEHICULES_LEGERS.filter(v =>
-    !q || v.id.toLowerCase().includes(q) || v.marque.toLowerCase().includes(q) ||
-    v.mat.includes(q) || v.chauffeur.toLowerCase().includes(q)
-  );
+  const q = (_vlSearch||'').toLowerCase();
+
+  let list = VEHICULES_LEGERS.filter(v => {
+    if(q && !v.id.toLowerCase().includes(q) && !v.marque.toLowerCase().includes(q) &&
+       !(v.mat||'').includes(q) && !v.chauffeur.toLowerCase().includes(q)) return false;
+    if(_vlFilter === 'fourgon') return v.type === 'fourgon';
+    if(_vlFilter === 'voiture') return v.type === 'voiture';
+    if(['ok','alerte','stop','disponible'].includes(_vlFilter)) return calcVerdictVL(v) === _vlFilter;
+    return true;
+  });
+
+  const verdictBorderColor = v =>
+    v === 'stop'      ? 'var(--red)'    :
+    v === 'alerte'    ? 'var(--orange)' :
+    v === 'disponible'? 'var(--blue)'   : 'var(--green)';
+
+  const verdictDot = v =>
+    v === 'stop'      ? '\u{1F534}' :
+    v === 'alerte'    ? '\u{1F7E1}' :
+    v === 'disponible'? '\u{1F535}' : '\u{1F7E2}';
+
+  if(!list.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">Aucun véhicule léger</div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px;padding:2px 0;">' +
+    list.map((v, idx) => {
+      const verdict = calcVerdictVL(v);
+      const bcolor  = verdictBorderColor(verdict);
+      const dot     = verdictDot(verdict);
+      const ico = v.type === 'fourgon' ? '🚐' : v.type === 'pick-up' ? '🛻' : '🚗';
+      const kmStr = v.km > 0 ? v.km.toLocaleString('fr-FR') + ' km' : '—';
+
+      // Voyant vidange
+      const diffVid = v.km - (v.derVid||0);
+      const pctVid = v.seuils.vidange > 0 ? Math.round(diffVid / v.seuils.vidange * 100) : 0;
+      const vidDot = pctVid >= 100 ? '🔴' : pctVid >= 87 ? '🔴' : pctVid >= 70 ? '🟡' : '🟢';
+
+      // Voyant légal
+      const dAss = _daysLeft(v.echAss);
+      const dCtrl = _daysLeft(v.echCtrl);
+      const dVign = _daysLeft(v.echVign);
+      const legMin = [dAss,dCtrl,dVign].filter(d=>d!==null).reduce((a,b)=>Math.min(a,b), 9999);
+      const legDot = legMin < 0 ? '🔴' : legMin <= 30 ? '🟠' : '🟢';
+
+      const realIdx = VEHICULES_LEGERS.indexOf(v);
+      return `<div onclick="showDetailVL('${v.id}')" style="
+          background:var(--bg2);
+          border:1px solid var(--border);
+          border-top:3px solid ${bcolor};
+          border-radius:10px;
+          padding:10px 10px 8px;
+          cursor:pointer;
+          transition:transform 0.15s,box-shadow 0.15s;
+          display:flex;flex-direction:column;align-items:center;gap:5px;
+          position:relative;"
+        onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 18px rgba(0,0,0,0.35)'"
+        onmouseout="this.style.transform='';this.style.boxShadow=''">
+          <span style="position:absolute;top:5px;right:7px;font-size:11px;" title="${verdict}">${dot}</span>
+          <div style="font-size:32px;line-height:1;margin-top:4px;">${ico}</div>
+          <div style="font-family:Rajdhani,sans-serif;font-size:15px;font-weight:700;color:var(--gold);letter-spacing:1px;">${v.id}</div>
+          <div style="font-size:9px;color:var(--text);font-weight:600;text-align:center;">${v.mat}</div>
+          <div style="font-size:9px;color:var(--text-dim);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%;padding:0 2px;">👤 ${v.chauffeur||'—'}</div>
+          <div style="display:flex;gap:4px;margin-top:2px;" title="Vidange · Documents">
+            <span style="font-size:9px;">${vidDot} Vid</span>
+            <span style="font-size:9px;">${legDot} Doc</span>
+          </div>
+          <div style="font-size:9px;color:var(--text-dim);">📍 ${kmStr}</div>
+        </div>`;
+    }).join('') + '</div>';
+}
+
+function showDetailVL(id) {
+  const v = VEHICULES_LEGERS.find(x => x.id === id);
+  if(!v) return;
+  const idx = VEHICULES_LEGERS.indexOf(v);
+
+  document.getElementById('vl-detail-title').textContent = v.id + ' — ' + v.marque + ' ' + (v.modele||'');
+  document.getElementById('vl-detail-sub').textContent = (v.type||'VL').toUpperCase() + ' · ' + v.mat + ' · 👤 ' + v.chauffeur;
+
   const parseDate = s => { if(!s||s==='—') return null; const p=s.split('/'); return p.length===3?new Date(+p[2],+p[1]-1,+p[0]):null; };
   const today = new Date();
   const daysDiff = d => d ? Math.round((d-today)/86400000) : null;
 
-  let html = '';
-  list.forEach((v, idx) => {
-    const verdict = calcVerdictVL(v);
-    const bord = verdict==='stop'?'var(--red)':verdict==='alerte'?'var(--orange)':'var(--green)';
-    const ico = v.type === 'fourgon' ? '🚐' : '🚗';
+  // Organes VL
+  const organes = [
+    {name:'HUILE MOTEUR',     derKm:v.derVid,       seuil:v.seuils.vidange,  emoji:'🛢️'},
+    {name:'COURROIE/CHAÎNE',  derKm:v.derCourroie||0, seuil:v.seuils.courroie, emoji:'⚙️'},
+    {name:'FREINS',           derKm:v.derFreins||0,  seuil:v.seuils.freins,   emoji:'🛑'},
+    {name:'PNEUS',            derKm:v.derPneus||0,   seuil:v.seuils.pneus,    emoji:'🔵'},
+  ];
 
-    // Statut vidange
-    const diffVid = v.km - (v.derVid||0);
-    const pctVid = v.seuils.vidange > 0 ? Math.round(diffVid / v.seuils.vidange * 100) : 0;
-    const vidCol = pctVid >= 87 ? 'var(--red)' : pctVid >= 70 ? 'var(--orange)' : 'var(--green)';
-    const vidTxt = pctVid >= 100 ? 'DÉPASSÉE' : `dans ${Math.max(0, v.seuils.vidange - diffVid).toLocaleString('fr-FR')} km`;
+  const docFields = [
+    {label:'🛡️ ASSURANCE', val:v.echAss,  field:'echAss'},
+    {label:'🔧 CTRL TECHNIQUE', val:v.echCtrl, field:'echCtrl'},
+    {label:'🏷️ VIGNETTE', val:v.echVign,  field:'echVign'},
+  ];
 
-    // Statut légal
-    const expAss = parseDate(v.echAss);
-    const dAss = daysDiff(expAss);
-    const assCol = dAss===null?'var(--text-dim)':dAss<0?'var(--red)':dAss<30?'var(--orange)':'var(--green)';
+  // Historique maintenance de ce VL
+  const histVL = (v.historique || []);
 
-    html += `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${bord};border-radius:10px;padding:12px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-        <div>
-          <div style="font-family:Rajdhani,sans-serif;font-size:16px;font-weight:700;color:var(--gold);">${ico} ${v.id} — ${v.marque}</div>
-          <div style="font-size:11px;color:var(--text-dim);">${v.modele} · ${v.mat}</div>
-          <div style="font-size:11px;color:var(--text-dim);">👤 ${v.chauffeur}</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:var(--gold);">${v.km.toLocaleString('fr-FR')} km</div>
-          <div style="font-size:10px;padding:2px 8px;border-radius:4px;background:${bord}22;color:${bord};border:1px solid ${bord}33;margin-top:3px;">${verdict.toUpperCase()}</div>
-        </div>
+  window._vlb = [];
+
+  document.getElementById('vl-detail-body').innerHTML = `
+    <!-- Actions -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <button onclick="majKmVL(${idx})" style="flex:1;padding:9px 6px;background:rgba(201,168,76,0.2);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📍 MAJ KM</button>
+      <button onclick="openAddMaintVL(${idx})" style="flex:1;padding:9px 6px;background:rgba(52,199,89,0.15);border:1px solid var(--green);border-radius:8px;color:var(--green);font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔧 MAINTENANCE</button>
+      <button onclick="openEditVL(${idx})" style="padding:9px 11px;background:rgba(100,150,200,0.15);border:1px solid rgba(100,150,200,0.5);border-radius:8px;color:#6496C8;font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;cursor:pointer;">✏️</button>
+      <button onclick="deleteVL(${idx})" style="padding:9px 11px;background:rgba(255,59,48,0.12);border:1px solid rgba(255,59,48,0.4);border-radius:8px;color:var(--red);font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️</button>
+    </div>
+
+    <!-- KM actuel -->
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <div style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-dim);">📍 KM ACTUEL</div>
+        <div style="font-family:Rajdhani,sans-serif;font-size:22px;color:var(--gold);font-weight:700;">${v.km>0?v.km.toLocaleString('fr-FR'):'—'}</div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px;">
-        <div style="background:var(--bg4);border-radius:6px;padding:6px;text-align:center;">
-          <div style="font-size:9px;color:var(--text-dim);">VIDANGE</div>
-          <div style="font-size:10px;font-weight:700;color:${vidCol};">${vidTxt}</div>
-          <div style="background:var(--bg3);border-radius:3px;height:3px;margin-top:4px;"><div style="height:100%;width:${Math.min(pctVid,100)}%;background:${vidCol};border-radius:3px;"></div></div>
-        </div>
-        <div style="background:var(--bg4);border-radius:6px;padding:6px;text-align:center;">
-          <div style="font-size:9px;color:var(--text-dim);">ASSURANCE</div>
-          <div style="font-size:10px;font-weight:700;color:${assCol};">${dAss===null?'—':dAss<0?'PÉRIMÉE':dAss<30?dAss+'j':v.echAss}</div>
-        </div>
-        <div style="background:var(--bg4);border-radius:6px;padding:6px;text-align:center;">
-          <div style="font-size:9px;color:var(--text-dim);">CTRL TECH</div>
-          <div style="font-size:10px;font-weight:700;color:var(--text);">${v.echCtrl||'—'}</div>
-        </div>
+      <div style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-dim);">📅 MISE EN SERVICE</div>
+        <div style="font-family:Rajdhani,sans-serif;font-size:14px;color:var(--text);font-weight:700;">${v.dateMES||'—'}</div>
       </div>
-      ${v.notes ? `<div style="font-size:11px;color:var(--text-dim);background:var(--bg4);border-radius:5px;padding:5px;margin-bottom:6px;">📝 ${v.notes}</div>` : ''}
-      <div style="display:flex;gap:6px;">
-        <button onclick="openEditVL(${idx})" style="flex:1;padding:7px;background:rgba(201,168,76,0.1);border:1px solid var(--gold);color:var(--gold);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">✏️ MODIFIER</button>
-        <button onclick="majKmVL(${idx})" style="flex:1;padding:7px;background:rgba(10,132,255,0.1);border:1px solid rgba(10,132,255,0.3);color:var(--blue);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">📍 MAJ KM</button>
-        <button onclick="generateQRCode('${v.id}','vl')" style="flex:1;padding:7px;background:rgba(52,199,89,0.1);border:1px solid rgba(52,199,89,0.3);color:var(--green);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">📱 QR</button>
+    </div>
+
+    <!-- Échéances légales -->
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;">
+      <div style="font-family:Rajdhani,sans-serif;font-size:13px;color:var(--gold);font-weight:700;margin-bottom:8px;letter-spacing:1px;">📋 ÉCHÉANCES LÉGALES</div>
+      ${docFields.map((df,ni) => {
+        const n = window._vlb.length;
+        window._vlb.push(function(){ openEditLegalVL(idx, df.field, df.label, df.val); });
+        const col = dateColorLive(df.val);
+        const dl = _daysLeft(df.val);
+        const dot = dl === null ? '⚫' : dl < 0 ? '🔴' : dl <= 30 ? '🟠' : '🟢';
+        const jLabel = (dl !== null && dl >= 0 && dl <= 30) ? ` <span style="font-size:9px;color:var(--orange)">(J-${dl})</span>` : '';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(201,168,76,0.1);">
+          <span style="font-size:11px;color:var(--text-dim);">${dot} ${df.label}</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:${col};">${df.val||'—'}${jLabel}</span>
+            <button onclick="window._vlb[${n}]()" style="font-size:10px;background:rgba(201,168,76,0.2);color:var(--gold);border:1px solid var(--gold);border-radius:4px;padding:3px 8px;cursor:pointer;font-weight:700;">✏️</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <!-- Core Monitor VL -->
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;">
+      <div style="font-family:Rajdhani,sans-serif;font-size:13px;color:var(--gold);font-weight:700;margin-bottom:8px;letter-spacing:1px;">🔧 CORE MONITOR VL — ÉTAT MAINTENANCE</div>
+      ${organes.map(o => {
+        if(!o.seuil || o.seuil <= 0) return '';
+        const diff = v.km - (o.derKm||0);
+        const pct  = o.derKm > 0 ? Math.min(Math.round(diff / o.seuil * 100), 110) : 0;
+        const col  = pct >= 87 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : o.derKm > 0 ? 'var(--green)' : 'var(--text-dim)';
+        const statut = pct >= 100 ? 'DÉPASSÉ' : pct >= 87 ? 'CRITIQUE' : pct >= 70 ? 'ALERTE' : o.derKm > 0 ? 'OK' : 'INCONNU';
+        const reste = o.seuil - diff;
+        const nextTxt = o.derKm > 0 ? (reste > 0 ? `dans ${reste.toLocaleString('fr-FR')} km` : `dépassé de ${Math.abs(reste).toLocaleString('fr-FR')} km`) : 'Non renseigné';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(201,168,76,0.06);">
+          <span style="font-size:14px;">${o.emoji}</span>
+          <div style="flex:1;">
+            <div style="font-size:11px;font-weight:700;color:var(--text);">${o.name}</div>
+            ${o.derKm > 0 ? `<div style="font-size:10px;color:var(--text-dim);">Der. à ${o.derKm.toLocaleString('fr-FR')} km · ${nextTxt}</div>
+            <div style="background:var(--bg4);border-radius:3px;height:4px;margin-top:3px;overflow:hidden;">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${col};border-radius:3px;transition:width 0.3s;"></div>
+            </div>` : `<div style="font-size:10px;color:var(--text-dim);">Non renseigné — cliquer 🔧 Maintenance</div>`}
+          </div>
+          <span style="font-size:10px;font-weight:700;color:${col};min-width:65px;text-align:right;">${statut}</span>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <!-- Historique opérations VL -->
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-family:Rajdhani,sans-serif;font-size:13px;color:var(--gold);font-weight:700;letter-spacing:1px;">📋 HISTORIQUE OPÉRATIONS</div>
+        <button onclick="openAddMaintVL(${idx})" style="padding:5px 10px;background:rgba(52,199,89,0.15);border:1px solid var(--green);border-radius:6px;color:var(--green);font-size:10px;font-weight:700;cursor:pointer;">➕ AJOUTER</button>
       </div>
-    </div>`;
-  });
-  el.innerHTML = html || '<div style="text-align:center;padding:20px;color:var(--text-dim);">Aucun véhicule léger</div>';
+      <div id="vl-histo-${idx}">
+      ${(v.historique&&v.historique.length)?v.historique.slice().reverse().map((h,hi)=>`
+        <div style="background:var(--bg4);border-radius:6px;padding:8px;margin-bottom:6px;border-left:3px solid var(--gold-dark);">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:11px;font-weight:700;color:var(--text);">${h.organe}</div>
+            <div style="font-size:10px;color:var(--text-dim);">${h.date||'—'}</div>
+          </div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:3px;">${h.pieces||'—'} ${h.km?'· '+h.km.toLocaleString('fr-FR')+' km':''}</div>
+          ${h.obs?`<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">📝 ${h.obs}</div>`:''}
+        </div>`).join('')
+      : '<div style="text-align:center;color:var(--text-dim);padding:12px;font-size:12px;">Aucune opération enregistrée</div>'}
+      </div>
+    </div>
+
+    ${v.notes ? `<div style="font-size:11px;color:var(--text-dim);background:var(--bg4);border-radius:6px;padding:8px;">📝 ${v.notes}</div>` : ''}
+  `;
+
+  document.getElementById('vl-detail-overlay').classList.add('open');
 }
+
+function openEditLegalVL(idx, field, label, valActuel) {
+  const v = VEHICULES_LEGERS[idx]; if(!v) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay open';
+  modal.onclick = e => { if(e.target===modal) modal.remove(); };
+  modal.innerHTML = `<div class="modal-panel">
+    <div class="modal-title">✏️ ${label}<button class="btn-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+    <div class="form-group"><div class="form-label">DATE (JJ/MM/AAAA)</div>
+      <input class="form-input" id="vled-val" value="${valActuel||''}" placeholder="DD/MM/YYYY"></div>
+    <button class="btn-submit" onclick="
+      const val=document.getElementById('vled-val').value.trim();
+      VEHICULES_LEGERS[${idx}]['${field}']=val;
+      document.querySelector('.modal-overlay.open')?.remove();
+      _saveAll();showDetailVL('${v.id}');showToast('✅ Mis à jour');
+    ">✅ ENREGISTRER</button>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function openAddMaintVL(idx) {
+  const v = VEHICULES_LEGERS[idx]; if(!v) return;
+  const organes = ['HUILE MOTEUR','COURROIE/CHAÎNE','FREINS','PNEUS','FILTRES','EMBRAYAGE','BATTERIE','AMORTISSEURS','DIRECTION','CLIMATISATION','AUTRE'];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay open';
+  modal.onclick = e => { if(e.target===modal) modal.remove(); };
+  modal.innerHTML = `<div class="modal-panel">
+    <div class="modal-title">🔧 OPÉRATION MAINTENANCE — ${v.id}<button class="btn-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+    <div class="form-group"><div class="form-label">ORGANE / OPÉRATION</div>
+      <select class="form-select" id="vmo-organe">
+        ${organes.map(o=>`<option value="${o}">${o}</option>`).join('')}
+      </select></div>
+    <div class="form-group"><div class="form-label">DATE</div>
+      <input class="form-input" id="vmo-date" placeholder="DD/MM/YYYY" value="${new Date().toLocaleDateString('fr-FR')}"></div>
+    <div class="form-group"><div class="form-label">KILOMÉTRAGE À L'INTERVENTION</div>
+      <input class="form-input" type="number" id="vmo-km" value="${v.km}"></div>
+    <div class="form-group"><div class="form-label">PIÈCES / DESCRIPTION</div>
+      <input class="form-input" id="vmo-pieces" placeholder="Ex: Huile 5W30 Total + filtre Bosch"></div>
+    <div class="form-group"><div class="form-label">OBSERVATIONS</div>
+      <input class="form-input" id="vmo-obs" placeholder="Optionnel"></div>
+    <button class="btn-submit" onclick="saveAddMaintVL(${idx})">✅ ENREGISTRER</button>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function saveAddMaintVL(idx) {
+  const v = VEHICULES_LEGERS[idx]; if(!v) return;
+  const organe = document.getElementById('vmo-organe')?.value;
+  const date   = document.getElementById('vmo-date')?.value.trim();
+  const km     = parseInt(document.getElementById('vmo-km')?.value)||v.km;
+  const pieces = document.getElementById('vmo-pieces')?.value.trim();
+  const obs    = document.getElementById('vmo-obs')?.value.trim();
+  if(!organe || !date) { showToast('⚠️ Organe et date obligatoires'); return; }
+  if(!v.historique) v.historique = [];
+  v.historique.push({organe, date, km, pieces, obs});
+  // Mise à jour km der opération
+  if(organe === 'HUILE MOTEUR')    v.derVid = km;
+  if(organe === 'COURROIE/CHAÎNE') v.derCourroie = km;
+  if(organe === 'FREINS')          v.derFreins = km;
+  if(organe === 'PNEUS')           v.derPneus = km;
+  document.querySelector('.modal-overlay.open')?.remove();
+  _saveAll();
+  showDetailVL(v.id);
+  showToast('✅ Opération enregistrée');
+}
+
+function deleteVL(idx) {
+  const v = VEHICULES_LEGERS[idx]; if(!v) return;
+  if(!confirm('Supprimer ' + v.id + ' ?')) return;
+  VEHICULES_LEGERS.splice(idx, 1);
+  _saveAll();
+  document.getElementById('vl-detail-overlay').classList.remove('open');
+  renderVehiculesLegers();
+  showToast('🗑️ Véhicule supprimé');
+}
+
 
 function majKmVL(idx) {
   const v = VEHICULES_LEGERS[idx]; if(!v) return;
@@ -7269,15 +7544,48 @@ function openAddVL() {
   const nextId = 'VL' + String((ids.length ? Math.max(...ids)+1 : 4)).padStart(2,'0');
   const modal = document.createElement('div');
   modal.className = 'modal-overlay open';
+  modal.style.overflowY = 'auto';
   modal.onclick = e => { if(e.target===modal) modal.remove(); };
-  modal.innerHTML = `<div class="modal-panel">
-    <div class="modal-title">➕ NOUVEAU VÉHICULE LÉGER<button class="btn-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
-    <div class="form-group"><div class="form-label">TYPE</div>
-      <select class="form-select" id="nvl-type"><option value="fourgon">🚐 Fourgon</option><option value="voiture">🚗 Voiture</option><option value="pick-up">🛻 Pick-up</option></select></div>
-    <div class="form-group"><div class="form-label">MARQUE</div><input class="form-input" id="nvl-marque" placeholder="Ex: RENAULT MASTER"></div>
-    <div class="form-group"><div class="form-label">MATRICULE</div><input class="form-input" id="nvl-mat" placeholder="000-000-16"></div>
-    <div class="form-group"><div class="form-label">KILOMÉTRAGE ACTUEL</div><input class="form-input" type="number" id="nvl-km" placeholder="0"></div>
-    <div class="form-group"><div class="form-label">CHAUFFEUR / AFFECTATION</div><input class="form-input" id="nvl-chauffeur" placeholder="Nom ou service"></div>
+  modal.innerHTML = `<div class="modal-panel" style="margin:16px auto;">
+    <div class="modal-title">➕ NOUVEAU VÉHICULE LÉGER — ${nextId}<button class="btn-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+    <div class="fg fg-2">
+      <div class="form-group"><div class="form-label">TYPE</div>
+        <select class="form-select" id="nvl-type"><option value="fourgon">🚐 Fourgon</option><option value="voiture">🚗 Voiture</option><option value="pick-up">🛻 Pick-up</option></select></div>
+      <div class="form-group"><div class="form-label">MARQUE</div>
+        <input class="form-input" id="nvl-marque" placeholder="Ex: RENAULT MASTER"></div>
+    </div>
+    <div class="fg fg-2">
+      <div class="form-group"><div class="form-label">MODÈLE</div>
+        <input class="form-input" id="nvl-modele" placeholder="Ex: L2H2 2.3 dCi 150ch"></div>
+      <div class="form-group"><div class="form-label">MATRICULE</div>
+        <input class="form-input" id="nvl-mat" placeholder="000-000-16"></div>
+    </div>
+    <div class="fg fg-2">
+      <div class="form-group"><div class="form-label">KM ACTUEL</div>
+        <input class="form-input" type="number" id="nvl-km" placeholder="0"></div>
+      <div class="form-group"><div class="form-label">MISE EN SERVICE</div>
+        <input class="form-input" id="nvl-mes" placeholder="DD/MM/YYYY"></div>
+    </div>
+    <div class="form-group"><div class="form-label">CHAUFFEUR / AFFECTATION</div>
+      <input class="form-input" id="nvl-chauffeur" placeholder="Nom ou service"></div>
+    <div class="fg fg-3">
+      <div class="form-group"><div class="form-label">🛢️ SEUIL VIDANGE (km)</div>
+        <input class="form-input" type="number" id="nvl-seuil-vid" value="15000"></div>
+      <div class="form-group"><div class="form-label">🛑 SEUIL FREINS (km)</div>
+        <input class="form-input" type="number" id="nvl-seuil-frein" value="40000"></div>
+      <div class="form-group"><div class="form-label">⚙️ SEUIL COURROIE (km)</div>
+        <input class="form-input" type="number" id="nvl-seuil-courr" value="120000"></div>
+    </div>
+    <div class="fg fg-3">
+      <div class="form-group"><div class="form-label">🛡️ ASSURANCE</div>
+        <input class="form-input" id="nvl-ass" placeholder="DD/MM/YYYY"></div>
+      <div class="form-group"><div class="form-label">🔧 CTRL TECHNIQUE</div>
+        <input class="form-input" id="nvl-ctrl" placeholder="DD/MM/YYYY"></div>
+      <div class="form-group"><div class="form-label">🏷️ VIGNETTE</div>
+        <input class="form-input" id="nvl-vign" placeholder="DD/MM/YYYY"></div>
+    </div>
+    <div class="form-group"><div class="form-label">NOTES</div>
+      <input class="form-input" id="nvl-notes" placeholder="Usage, particularités..."></div>
     <button class="btn-submit" onclick="saveNewVL('${nextId}')">✅ ENREGISTRER</button>
   </div>`;
   document.body.appendChild(modal);
@@ -7285,23 +7593,32 @@ function openAddVL() {
 
 function saveNewVL(id) {
   const marque = document.getElementById('nvl-marque')?.value.trim();
-  const mat = document.getElementById('nvl-mat')?.value.trim();
+  const mat    = document.getElementById('nvl-mat')?.value.trim();
   if(!marque || !mat) { showToast('⚠️ Marque et matricule obligatoires'); return; }
+  const km = parseInt(document.getElementById('nvl-km')?.value)||0;
   VEHICULES_LEGERS.push({
     id, type: document.getElementById('nvl-type')?.value||'fourgon',
-    marque, modele:'', mat,
+    marque, modele: document.getElementById('nvl-modele')?.value.trim()||'', mat,
     chauffeur: document.getElementById('nvl-chauffeur')?.value.trim()||'Non assigné',
-    km: parseInt(document.getElementById('nvl-km')?.value)||0,
-    derVid: 0, dateDerVid:'—',
-    echAss:'—', echCtrl:'—', echVign:'—', statutLegal:'OK',
-    seuils:{ vidange:15000, courroie:120000, freins:40000, pneus:50000 },
+    dateMES: document.getElementById('nvl-mes')?.value.trim()||'—',
+    km, derVid:0, dateDerVid:'—',
+    echAss:  document.getElementById('nvl-ass')?.value.trim()||'—',
+    echCtrl: document.getElementById('nvl-ctrl')?.value.trim()||'—',
+    echVign: document.getElementById('nvl-vign')?.value.trim()||'—',
+    seuils:{
+      vidange: parseInt(document.getElementById('nvl-seuil-vid')?.value)||15000,
+      courroie:parseInt(document.getElementById('nvl-seuil-courr')?.value)||120000,
+      freins:  parseInt(document.getElementById('nvl-seuil-frein')?.value)||40000,
+      pneus:50000
+    },
     derCourroie:0, derFreins:0, derPneus:0,
-    notes:'', actif:true
+    notes: document.getElementById('nvl-notes')?.value.trim()||'',
+    historique:[], actif:true
   });
   document.querySelector('.modal-overlay.open')?.remove();
   _saveAll();
   renderVehiculesLegers();
-  showToast('✅ Véhicule ajouté');
+  showToast('✅ ' + id + ' ajouté');
 }
 
 // ============================================================
@@ -7740,8 +8057,9 @@ function pushNotif(titre, corps, icone, tag) {
   });
   if(NOTIF_LOG.length > 50) NOTIF_LOG.splice(50);
   updateNotifBadge();
-  // Persister immédiatement
+  // Persister (localStorage immédiat + Firebase en arrière-plan)
   try { localStorage.setItem('COREDZ_NOTIF_LOG', JSON.stringify(NOTIF_LOG)); } catch(e) {}
+  if(typeof _fbSaveTimer !== 'undefined') { if(_fbSaveTimer) clearTimeout(_fbSaveTimer); _fbSaveTimer = setTimeout(_fbSaveNow, 5000); }
 
   // Notification navigateur si permission
   if(notifPermission && Notification.permission === 'granted') {
@@ -8330,6 +8648,8 @@ function applyOCRDate(vehicleId, docType, dateStr) {
   </div>`;
   modal.onclick = e => { if(e.target===modal) modal.remove(); };
   document.body.appendChild(modal);
+  // Sauvegarder immédiatement
+  _saveAll();
 }
 
 // ===== NAVIGATION =====
@@ -8387,6 +8707,8 @@ function showPage(page) {
   if(page === 'maintenance-hub') { /* géré directement par maintSwitchTab */ }
   if(page === 'ref' && !document.getElementById('ref-list').innerHTML) renderRef();
   if(page === 'ref-rem' && !document.getElementById('ref-rem-list').innerHTML) renderRefRemorque();
+  if(page === 'vl') renderVehiculesLegers();
+  if(page === 'ref-vl') renderRefVL();
   if(page === 'notifications') renderNotifList();
   if(page === 'bons') { window.populateBonsTracteurSelect(); window.renderBons(); }
   if(page === 'pannes') { window.initPannesPage(); }
@@ -13394,6 +13716,233 @@ function searchRefRem() {
   renderRefRemorque(q);
 }
 
+// ============================================================
+// RÉFÉRENTIEL TECHNIQUE VL — FOURGONS & VOITURES
+// CORE-DZ v48 — PYRAMID TRANSPORT
+// ============================================================
+const REF_TECH_VL = [
+  {
+    organe: 'MOTEUR — VIDANGE HUILE',
+    categorie: 'commun',
+    sous: 'Entretien périodique moteur',
+    frequence: 'Fourgon diesel : 15 000 km / Voiture diesel : 10 000 km / Essence : 7 500 km',
+    huiles: [
+      { marque:'TOTAL RUBIA', grade:'5W-30 C3', volume:'5 à 7L selon moteur', spec:'ACEA C3 / API SN', note:'Fourgons diesels Euro 5/6' },
+      { marque:'CASTROL EDGE', grade:'5W-30 LL', volume:'5L', spec:'VW 504.00 / BMW LL-04', note:'Voitures européennes modernes' },
+      { marque:'MOBIL SUPER', grade:'10W-40', volume:'5L', spec:'API SL/CF', note:'Moteurs anciens / véhicules DZ' },
+    ],
+    filtres: 'Filtre huile : changer à chaque vidange. Filtre gasoil primaire + séparateur eau.',
+    symptomes: 'Niveau bas, bruit moteur, fumée bleue, voyant pression huile allumé',
+    action: 'Arrêt immédiat si voyant rouge allumé. Contrôle niveau toutes les 5 000 km.',
+    points_faibles: ['Oubli remplacement filtre → contamination accélérée', 'Gasoil DZ : risque d'eau dans circuit', 'Suivi kilométrage obligatoire'],
+  },
+  {
+    organe: 'COURROIE DISTRIBUTION / CHAÎNE',
+    categorie: 'commun',
+    sous: 'Distribution moteur',
+    frequence: 'Courroie : 90 000–150 000 km ou 5 ans (selon constructeur). Chaîne : durée de vie moteur si entretien correct.',
+    huiles: [],
+    filtres: 'Remplacer aussi : galet tendeur, galet enrouleur, pompe à eau (si sur courroie)',
+    symptomes: 'Claquement distribution, démarrage difficile, perte puissance, voyant moteur, courroie craquelée',
+    action: 'RISQUE CASSE MOTEUR si courroie cassée. Respecter strictement intervalle constructeur.',
+    points_faibles: ['Renault Master 2.3 dCi : courroie à 150 000 km obligatoire', 'Peugeot Boxer 2.2 HDI : chaîne distribution fragile à 100-120K', 'Kia Sportage 1.6 CRDi : courroie 90 000 km'],
+  },
+  {
+    organe: 'SYSTÈME DE FREINAGE',
+    categorie: 'commun',
+    sous: 'Freins avant et arrière',
+    frequence: 'Plaquettes avant : 30 000–40 000 km. Disques : 80 000–100 000 km. Plaquettes arrière : 40 000–60 000 km.',
+    huiles: [
+      { marque:'TOTAL HYDRAULIQUE', grade:'DOT 4 LV', volume:'0.5L', spec:'ISO 4925 Class 6', note:'Liquide de frein — changer tous les 2 ans' },
+    ],
+    filtres: 'Contrôle épaisseur minimum : plaquettes > 3mm, disques > épaisseur mini gravée',
+    symptomes: 'Bruit métallique freinage, vibrations volant, pédale molle, déviation frein, voyant ABS',
+    action: 'Contrôle visuel à chaque vidange. Purge circuit frein tous les 2 ans.',
+    points_faibles: ['Freins arrière tambour : nettoyage poussière obligatoire', 'Liquide frein hygroscopique : absorbe humidité → point ébullition chute', 'ABS : vérifier capteurs en cas de voyant allumé'],
+  },
+  {
+    organe: 'PNEUS',
+    categorie: 'commun',
+    sous: 'Pneumatiques et pressions',
+    frequence: 'Durée de vie : 40 000–60 000 km selon usage. Contrôle pression mensuel.',
+    huiles: [],
+    filtres: 'Profondeur rainures minimum légal : 1.6mm (recommandé : 3mm). Contrôle usure régulière.',
+    symptomes: 'Usure irrégulière, vibrations, déviation direction, bruit de roulement, perte pression',
+    action: 'Permutation pneus tous les 20 000 km. Équilibrage/géométrie si vibrations.',
+    points_faibles: [
+      'Fourgon MASTER chargé : pression arrière 4.5 bar à charge max',
+      'Pneus été DZ : chaleur accélère dégradation — vérifier gomme craquelée',
+      'Surgonflage fréquent en DZ : usure centrale accélérée',
+    ],
+  },
+  {
+    organe: 'FILTRES AIR & HABITACLE',
+    categorie: 'commun',
+    sous: 'Filtration air moteur et cabine',
+    frequence: 'Filtre à air : 30 000 km ou annuel. Filtre habitacle : 15 000 km ou chaque vidange.',
+    huiles: [],
+    filtres: 'Filtre air moteur : papier plissé sec ou huile selon modèle. Filtre habitacle : charbon actif recommandé.',
+    symptomes: 'Perte puissance moteur, surconsommation, mauvaises odeurs clim, buée intérieure',
+    action: 'Priorité filtre habitacle en DZ (poussière, sable). Filtre air moteur : contrôle visuel à chaque vidange.',
+    points_faibles: ['Routes poussiéreuses DZ : remplacement plus fréquent', 'Filtre habitacle encrassé → compresseur clim surchargé'],
+  },
+  {
+    organe: 'EMBRAYAGE (boîte manuelle)',
+    categorie: 'fourgon',
+    sous: 'Transmission manuelle',
+    frequence: 'Durée de vie : 100 000–180 000 km selon usage. Fourgon chargé en montagne : 60 000–80 000 km.',
+    huiles: [],
+    filtres: 'Kit embrayage complet : disque + plateau + butée. Ne jamais changer seul.',
+    symptomes: 'Glissement embrayage (régime monte mais pas la vitesse), pédale molle, difficulté passage vitesses, odeur brûlé',
+    action: 'Adapter conduite en charge. Éviter semi-embrayage prolongé. Contrôle câble/hydraulique embrayage.',
+    points_faibles: [
+      'Renault Master : embrayage hydraulique — contrôle niveau liquide embrayage',
+      'Peugeot Boxer : câble embrayage — vérifier jeu pédale',
+      'Conduite chargée DZ : durée de vie réduite de 30-40%',
+    ],
+  },
+  {
+    organe: 'DIRECTION & SUSPENSION',
+    categorie: 'commun',
+    sous: 'Train avant, amortisseurs, direction',
+    frequence: 'Amortisseurs : 80 000–100 000 km. Rotules/biellettes : contrôle visuel annuel. Géométrie : après chaque impact.',
+    huiles: [
+      { marque:'TOTAL FLUIDE AT 42', grade:'—', volume:'1L', spec:'PSF', note:'Huile direction assistée (si servo hydraulique)' },
+    ],
+    filtres: 'Contrôle jeu direction, usure rotules, soufflets direction, état biellettes.',
+    symptomes: 'Bruit passage virage, vibrations, dérive direction, usure irrégulière pneus, direction dure',
+    action: 'Contrôle géométrie chaque 20 000 km ou après impact. Suspension fourgon chargé : contrôle renforcé.',
+    points_faibles: ['Routes DZ dégradées : amortisseurs usés à 60-70K km', 'Fourgon lourdement chargé : usure rotules accélérée', 'Soufflets direction : vérifier intégrité à chaque vidange'],
+  },
+  {
+    organe: 'BATTERIE & ALTERNATEUR',
+    categorie: 'commun',
+    sous: 'Circuit électrique principal',
+    frequence: 'Batterie : 3–5 ans. Alternateur : contrôle tension à chaque vidange.',
+    huiles: [],
+    filtres: 'Tension batterie : 12.6V à vide. Tension charge alternateur : 13.8–14.4V. Câbles : vérifier bornes (oxydation fréquente DZ).',
+    symptomes: 'Démarrage difficile, voyant batterie, phares faibles, coupures électriques, alternateur bruyant',
+    action: 'Batterie AGM recommandée pour véhicules récents (stop-start). Test batterie avant hivernage.',
+    points_faibles: ['Chaleur DZ accélère vieillissement batterie (2-3 ans seulement)', 'Oxydation bornes : nettoyage et graisse batterie obligatoire', 'Alternateur : courroie d'accessoires à contrôler'],
+  },
+  {
+    organe: 'CLIMATISATION',
+    categorie: 'commun',
+    sous: 'Système A/C et chauffage',
+    frequence: 'Entretien annuel avant été. Recharge gaz R134a ou R1234yf selon modèle.',
+    huiles: [],
+    filtres: 'Filtre déshydrateur/récepteur : remplacement si circuit ouvert. Contrôle pression haute/basse.',
+    symptomes: 'Clim ne refroidit plus, mauvaises odeurs, compresseur bruyant, condensation intérieure excessive',
+    action: 'Faire tourner clim 10 min/semaine même en hiver. Désinfection circuit annuelle.',
+    points_faibles: ['Gaz fuit aux raccords : test fuite à chaque entretien', 'Compresseur endommagé si clim tournée vide', 'Évaporateur : nettoyage recommandé tous les 2 ans'],
+  },
+  {
+    organe: 'BOÎTE DE VITESSES / PONT',
+    categorie: 'fourgon',
+    sous: 'Transmission mécanique',
+    frequence: 'Huile BV manuelle : 80 000–100 000 km. Huile pont : 80 000 km. BV automatique : 60 000 km.',
+    huiles: [
+      { marque:'TOTAL TRANSMISSION', grade:'75W-80 GL4', volume:'2.5L', spec:'API GL-4', note:'Boîte manuelle' },
+      { marque:'MOBIL ATF 3309', grade:'—', volume:'5L', spec:'Dexron VI', note:'Boîte automatique' },
+    ],
+    filtres: 'BV automatique : filtre interne à changer avec l'huile.',
+    symptomes: 'Passage vitesses difficile, bruit BV, vibrations driveshaft, fuite huile pont',
+    action: 'Ne pas confondre huile BV et huile moteur. Contrôle niveau à chaque vidange.',
+    points_faibles: ['BV automatique : très sensible à la qualité huile', 'Joint sortie boîte : fuite fréquente sur kilométrage élevé'],
+  },
+];
+
+let _refVLFilter = 'all';
+let _refVLSearch = '';
+
+function filterRefVL(cat, btn) {
+  _refVLFilter = cat;
+  if(btn) {
+    document.querySelectorAll('#ref-vl-type-tabs .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  renderRefVL();
+}
+
+function searchRefVL(q) {
+  _refVLSearch = q;
+  renderRefVL();
+}
+
+function renderRefVL() {
+  const el = document.getElementById('ref-vl-list');
+  if(!el) return;
+  const q = (_refVLSearch||'').toLowerCase();
+  const list = REF_TECH_VL.filter(r => {
+    if(_refVLFilter !== 'all' && r.categorie !== _refVLFilter && r.categorie !== 'commun') return false;
+    if(_refVLFilter === 'commun' && r.categorie !== 'commun') return false;
+    if(q && !r.organe.toLowerCase().includes(q) && !r.sous.toLowerCase().includes(q) &&
+       !r.symptomes.toLowerCase().includes(q) && !r.action.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  if(!list.length) {
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-dim);">Aucun résultat</div>';
+    return;
+  }
+
+  const catColor = c => c === 'fourgon' ? 'var(--orange)' : c === 'voiture' ? 'var(--blue)' : 'var(--gold)';
+  const catLabel = c => c === 'fourgon' ? '🚐 FOURGON' : c === 'voiture' ? '🚗 VOITURE' : '🔧 COMMUN';
+
+  el.innerHTML = list.map(r => `
+    <div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${catColor(r.categorie)};border-radius:10px;padding:14px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+        <div>
+          <div style="font-family:Rajdhani,sans-serif;font-size:15px;font-weight:700;color:var(--gold);">${r.organe}</div>
+          <div style="font-size:11px;color:var(--text-dim);">${r.sous}</div>
+        </div>
+        <span style="font-size:9px;font-weight:700;padding:3px 7px;border-radius:4px;background:${catColor(r.categorie)}22;color:${catColor(r.categorie)};border:1px solid ${catColor(r.categorie)}44;white-space:nowrap;">${catLabel(r.categorie)}</span>
+      </div>
+
+      <div style="background:rgba(201,168,76,0.06);border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="font-size:10px;color:var(--text-dim);font-weight:700;margin-bottom:3px;">⏱️ FRÉQUENCE / INTERVALLE</div>
+        <div style="font-size:11px;color:var(--text);">${r.frequence}</div>
+      </div>
+
+      ${r.huiles && r.huiles.length ? `
+      <div style="margin-bottom:8px;">
+        <div style="font-size:10px;color:var(--text-dim);font-weight:700;margin-bottom:5px;">🛢️ FLUIDES RECOMMANDÉS</div>
+        ${r.huiles.map(h => `
+          <div style="background:var(--bg4);border-radius:6px;padding:7px;margin-bottom:4px;display:flex;gap:8px;align-items:center;">
+            <div style="flex:1;">
+              <span style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;color:var(--gold);">${h.marque} ${h.grade}</span>
+              <span style="font-size:10px;color:var(--text-dim);"> · ${h.volume} · ${h.spec}</span>
+            </div>
+            <div style="font-size:10px;color:var(--text-dim);text-align:right;">${h.note}</div>
+          </div>`).join('')}
+      </div>` : ''}
+
+      ${r.filtres ? `
+      <div style="background:rgba(10,132,255,0.06);border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="font-size:10px;color:var(--blue);font-weight:700;margin-bottom:3px;">🔩 PIÈCES / FILTRES</div>
+        <div style="font-size:11px;color:var(--text);">${r.filtres}</div>
+      </div>` : ''}
+
+      <div style="background:rgba(255,149,0,0.06);border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="font-size:10px;color:var(--orange);font-weight:700;margin-bottom:3px;">⚠️ SYMPTÔMES D'ALERTE</div>
+        <div style="font-size:11px;color:var(--text);">${r.symptomes}</div>
+      </div>
+
+      <div style="background:rgba(52,199,89,0.06);border-radius:6px;padding:8px;margin-bottom:${r.points_faibles&&r.points_faibles.length?'8px':'0'};">
+        <div style="font-size:10px;color:var(--green);font-weight:700;margin-bottom:3px;">✅ ACTION CORRECTIVE</div>
+        <div style="font-size:11px;color:var(--text);">${r.action}</div>
+      </div>
+
+      ${r.points_faibles && r.points_faibles.length ? `
+      <div style="background:rgba(255,59,48,0.06);border-radius:6px;padding:8px;">
+        <div style="font-size:10px;color:var(--red);font-weight:700;margin-bottom:5px;">🔴 POINTS FAIBLES CONNUS (DZ)</div>
+        ${r.points_faibles.map(p=>`<div style="font-size:10px;color:var(--text);padding:2px 0;border-bottom:1px solid rgba(255,59,48,0.1);">▸ ${p}</div>`).join('')}
+      </div>` : ''}
+    </div>
+  `).join('');
+}
+
+
 // ===== RECHERCHE =====
 function doSearch() {
   const q = document.getElementById('search-input').value.toLowerCase().trim();
@@ -14712,6 +15261,7 @@ function validerManKm() {
   document.getElementById('man-km-val').value = '';
   document.getElementById('man-km-preview').style.display = 'none';
   document.getElementById('man-km-actuel').textContent = val.toLocaleString('fr-FR') + ' km';
+  _saveAll();
   // Refresh
   renderTracteurs();
   showToast('✅ KM mis à jour : ' + t.mat + ' → ' + val.toLocaleString('fr-FR') + ' km');
@@ -14992,6 +15542,7 @@ function appliquerMajKmNaftal() {
   document.getElementById('naf-info-km').textContent = t.km.toLocaleString('fr-FR') + ' km';
   document.getElementById('naftal-km-avant').textContent = t.km.toLocaleString('fr-FR') + ' km';
   document.getElementById('naftal-km-update-box').style.display = 'none';
+  _saveAll();
   // Refresh tracteurs si page visible
   renderTracteurs();
   showToast('✅ KM mis à jour : ' + t.mat + ' → ' + t.km.toLocaleString('fr-FR') + ' km');
@@ -15233,6 +15784,7 @@ function saveDemandeMaintFromParc() {
     source: 'parc'
   });
   document.getElementById('dm-modal').remove();
+  _saveAll();
   renderSituationParc(_spTab);
   showToast('✅ Demande enregistrée → Module Maintenance');
 }
@@ -15294,12 +15846,13 @@ function saveDemandeMaint() {
   const dateAff = d[2]+'/'+d[1]+'/'+d[0];
   DEMANDES_MAINT.unshift({id:'DM'+(Date.now()%100000),veh,type,org,prio,date:dateAff,desc,sig,statut:'EN ATTENTE'});
   document.getElementById('dm-modal').remove();
+  _saveAll();
   renderMaintenancePanel();
   showToast('✅ Demande enregistrée pour '+veh);
 }
 
-function changeDMStatut(idx,val){ if(DEMANDES_MAINT[idx]){ DEMANDES_MAINT[idx].statut=val; renderMaintenancePanel(); showToast('✅ Statut → '+val); } }
-function deleteDM(idx){ DEMANDES_MAINT.splice(idx,1); renderMaintenancePanel(); showToast('🗑️ Demande supprimée'); }
+function changeDMStatut(idx,val){ if(DEMANDES_MAINT[idx]){ DEMANDES_MAINT[idx].statut=val; _saveAll(); renderMaintenancePanel(); showToast('✅ Statut → '+val); } }
+function deleteDM(idx){ DEMANDES_MAINT.splice(idx,1); _saveAll(); renderMaintenancePanel(); showToast('🗑️ Demande supprimée'); }
 
 function renderMaintenancePanel() {
   const tot=DEMANDES_MAINT.length;
@@ -16027,6 +16580,36 @@ function iaAdminPanel() {
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;letter-spacing:1px;font-weight:700;">📍 PARTAGER UNE LOCALISATION D'URGENCE</div>
       <button onclick="iaAdminShareLoc()" style="width:100%;padding:10px;background:rgba(201,168,76,0.1);border:1px solid var(--gold);color:var(--gold);border-radius:8px;font-family:Exo 2,sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📍 CAPTURER ET ENVOYER MA POSITION</button>
     </div>
+
+    <!-- 🔑 CLÉ API GROQ -->
+    <div style="margin-top:14px;background:rgba(120,80,200,0.08);border:1px solid rgba(120,80,200,0.3);border-radius:10px;padding:12px;">
+      <div style="font-size:11px;font-weight:700;color:#a070ff;margin-bottom:8px;letter-spacing:1px;">🔑 CLÉ API GROQ (CORE-IA)</div>
+      <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;">
+        Clé gratuite sur <strong style="color:#a070ff;">console.groq.com</strong> → API Keys → Create. 14 400 req/jour offertes.
+        Modèle: <strong>llama-4-scout</strong>.
+      </div>
+      <div style="display:flex;gap:6px;">
+        <input type="password" id="admin-groq-key" placeholder="gsk_xxxxxxxxxxxxxxxxxxxxxxxx"
+          value="${localStorage.getItem('groq_api_key')||''}"
+          style="flex:1;padding:9px 10px;background:var(--bg4);border:1px solid rgba(120,80,200,0.4);border-radius:8px;color:var(--text);font-size:12px;font-family:monospace;outline:none;">
+        <button onclick="
+          const k=document.getElementById('admin-groq-key').value.trim();
+          if(!k){showToast('⚠️ Clé vide');return;}
+          localStorage.setItem('groq_api_key',k);
+          window._groqKey=k;
+          document.getElementById('ia-admin-modal').remove();
+          showToast('✅ Clé Groq enregistrée — CORE-IA active !');
+          document.getElementById('ia-status-line').textContent='● En ligne — Clé Groq OK — Prêt';
+          document.getElementById('ia-status-line').style.color='var(--green)';
+        " style="padding:9px 14px;background:linear-gradient(135deg,#7050c0,#a070ff);color:#fff;border:none;border-radius:8px;font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">
+          💾 SAUVER
+        </button>
+        ${(localStorage.getItem('groq_api_key')) ? `<button onclick="localStorage.removeItem('groq_api_key');window._groqKey=null;document.getElementById('ia-admin-modal').remove();showToast('🗑️ Clé supprimée');" style="padding:9px 10px;background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:var(--red);border-radius:8px;font-size:12px;cursor:pointer;">🗑️</button>` : ''}
+      </div>
+      <div style="margin-top:6px;font-size:10px;color:${(localStorage.getItem('groq_api_key')||window._groqKey)?'var(--green)':'var(--red)'};">
+        Statut : ${(localStorage.getItem('groq_api_key')||window._groqKey) ? '● Clé configurée' : '● Aucune clé — CORE-IA silencieuse'}
+      </div>
+    </div>
   </div>`;
   document.body.appendChild(modal);
 }
@@ -16697,7 +17280,7 @@ function renderDetailDemandes(t) {
 // ── Configuration Firebase CORE-DZ ──
 const _FB_CONFIG = {
   apiKey: "AIzaSyC1TTNYYA-4lBSfCzUKMMN6-lN3XzuxyVQ",
-  authDomain: "yahiacheriframel-droid.github.io",
+  authDomain: "core-dz.firebaseapp.com",
   projectId: "core-dz",
   storageBucket: "core-dz.firebasestorage.app",
   messagingSenderId: "656557643316",
@@ -16901,7 +17484,9 @@ async function _fbSaveNow() {
   if (!_fbReady || !_fbDb) { _fbShowStatus('offline'); return; }
   try {
     const { doc, setDoc } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-    const payload = {
+
+    // ── Document 1 : Flotte (arrays) ──
+    const payloadFlotte = {
       tracteurs:        JSON.parse(JSON.stringify(TRACTEURS)),
       remorques:        JSON.parse(JSON.stringify(REMORQUES)),
       historique:       JSON.parse(JSON.stringify(HISTORIQUE.slice(0, 500))),
@@ -16909,16 +17494,34 @@ async function _fbSaveNow() {
       chauffeurs:       JSON.parse(JSON.stringify(CHAUFFEURS)),
       vehicules_legers: JSON.parse(JSON.stringify(VEHICULES_LEGERS)),
       notif_log:        JSON.parse(JSON.stringify(NOTIF_LOG.slice(0, 50))),
-      // ── Commandes + maintenances (DB) ──
-      db_commandes:     JSON.parse(JSON.stringify((typeof DB !== 'undefined' && DB.db && DB.db.commandes) ? DB.db.commandes : {})),
-      db_maintenances:  JSON.parse(JSON.stringify((typeof DB !== 'undefined' && DB.db && DB.db.maintenances) ? DB.db.maintenances : {})),
-      // ── Planning importé / scanné ──
+      demandes_maint:   JSON.parse(JSON.stringify((typeof DEMANDES_MAINT !== 'undefined') ? DEMANDES_MAINT : [])),
       planning_commandes: JSON.parse(JSON.stringify((typeof PLANNING_COMMANDES !== 'undefined' && PLANNING_COMMANDES) ? PLANNING_COMMANDES : null)),
       updated_at:       new Date().toISOString()
     };
-    await setDoc(doc(_fbDb, 'flotte', 'main'), payload);
+
+    // ── Document 2 : DB (bons, pannes, commandes, amendes, pesées, maintenances, planning chauffeurs) ──
+    const _db = (typeof DB !== 'undefined' && DB.db) ? DB.db : {};
+    const payloadDB = {
+      commandes:          JSON.parse(JSON.stringify(_db.commandes          || {})),
+      bons:               JSON.parse(JSON.stringify(_db.bons               || {})),
+      pannes:             JSON.parse(JSON.stringify(_db.pannes             || {})),
+      amendes:            JSON.parse(JSON.stringify(_db.amendes            || {})),
+      pesees:             JSON.parse(JSON.stringify(_db.pesees             || {})),
+      maintenances:       JSON.parse(JSON.stringify(_db.maintenances       || {})),
+      chauffeursPlanning: JSON.parse(JSON.stringify(_db.chauffeursPlanning || {})),
+      liaisons:           JSON.parse(JSON.stringify(_db.liaisons           || {})),
+      predictions:        JSON.parse(JSON.stringify(_db.predictions        || {})),
+      conges:             JSON.parse(JSON.stringify(_db.conges             || {})),
+      updated_at:         new Date().toISOString()
+    };
+
+    await Promise.all([
+      setDoc(doc(_fbDb, 'flotte', 'main'), payloadFlotte),
+      setDoc(doc(_fbDb, 'flotte', 'db'),   payloadDB)
+    ]);
+
     _fbShowStatus('saved');
-    console.log('☁️ Données sauvegardées dans Firebase — ' + new Date().toLocaleTimeString('fr-FR'));
+    console.log('☁️ Tout sauvegardé dans Firebase (' + new Date().toLocaleTimeString('fr-FR') + ')');
     setTimeout(() => _fbShowStatus('connected'), 3000);
   } catch(e) {
     console.warn('⚠️ Erreur sauvegarde Firebase:', e);
@@ -16932,9 +17535,18 @@ async function _loadAll() {
   if (!_fbReady || !_fbDb) { _loadAllLocal(); return; }
   try {
     const { doc, getDoc } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-    const snap = await getDoc(doc(_fbDb, 'flotte', 'main'));
-    if (snap.exists()) {
-      const d = snap.data();
+
+    // Charger les deux documents en parallèle
+    const [snapMain, snapDB] = await Promise.all([
+      getDoc(doc(_fbDb, 'flotte', 'main')),
+      getDoc(doc(_fbDb, 'flotte', 'db'))
+    ]);
+
+    let restored = false;
+
+    // ── Document 1 : Flotte (arrays) ──
+    if (snapMain.exists()) {
+      const d = snapMain.data();
       if(d.tracteurs)        { TRACTEURS.length = 0;        d.tracteurs.forEach(x => TRACTEURS.push(x)); }
       if(d.remorques)        { REMORQUES.length = 0;        d.remorques.forEach(x => REMORQUES.push(x)); }
       if(d.historique)       { HISTORIQUE.length = 0;       d.historique.forEach(x => HISTORIQUE.push(x)); }
@@ -16942,19 +17554,40 @@ async function _loadAll() {
       if(d.chauffeurs)       { CHAUFFEURS.length = 0;       d.chauffeurs.forEach(x => CHAUFFEURS.push(x)); }
       if(d.vehicules_legers) { VEHICULES_LEGERS.length = 0; d.vehicules_legers.forEach(x => VEHICULES_LEGERS.push(x)); }
       if(d.notif_log)        { NOTIF_LOG.length = 0;        d.notif_log.forEach(x => NOTIF_LOG.push(x)); }
-      // ── Restaurer commandes + maintenances ──
-      if(d.db_commandes   && typeof DB !== 'undefined') { DB.db.commandes   = d.db_commandes;   }
-      if(d.db_maintenances && typeof DB !== 'undefined') { DB.db.maintenances = d.db_maintenances; }
-      // ── Restaurer planning scanné ──
+      if(d.demandes_maint)   { DEMANDES_MAINT.length = 0;   d.demandes_maint.forEach(x => DEMANDES_MAINT.push(x)); }
       if(d.planning_commandes) { PLANNING_COMMANDES = d.planning_commandes; }
-      console.log('☁️ Données restaurées depuis Firebase (' + (d.updated_at||'') + ')');
-      showToast('☁️ Données cloud chargées');
-      // Rafraîchir l'affichage
-      if(typeof renderTracteurs === 'function') setTimeout(renderTracteurs, 100);
-      if(typeof renderRemorques === 'function') setTimeout(renderRemorques, 150);
-      if(typeof updateAlertBanner === 'function') setTimeout(updateAlertBanner, 200);
-      if(typeof renderDashboard === 'function') setTimeout(renderDashboard, 250);
-      if(typeof updateNotifBadge === 'function') setTimeout(updateNotifBadge, 300);
+      console.log('☁️ Flotte restaurée depuis Firebase (' + (d.updated_at||'') + ')');
+      restored = true;
+    }
+
+    // ── Document 2 : DB (bons, pannes, commandes, amendes, pesées…) ──
+    if (snapDB.exists() && typeof DB !== 'undefined') {
+      const d = snapDB.data();
+      if(d.commandes)          DB.db.commandes          = d.commandes;
+      if(d.bons)               DB.db.bons               = d.bons;
+      if(d.pannes)             DB.db.pannes             = d.pannes;
+      if(d.amendes)            DB.db.amendes            = d.amendes;
+      if(d.pesees)             DB.db.pesees             = d.pesees;
+      if(d.maintenances)       DB.db.maintenances       = d.maintenances;
+      if(d.chauffeursPlanning) DB.db.chauffeursPlanning = d.chauffeursPlanning;
+      if(d.liaisons)           DB.db.liaisons           = d.liaisons;
+      if(d.predictions)        DB.db.predictions        = d.predictions;
+      if(d.conges)             DB.db.conges             = d.conges;
+      console.log('☁️ DB restaurée depuis Firebase (' + (d.updated_at||'') + ')');
+      restored = true;
+    }
+
+    if (restored) {
+      showToast('☁️ Toutes les données cloud restaurées');
+      setTimeout(() => {
+        if(typeof renderTracteurs    === 'function') renderTracteurs();
+        if(typeof renderRemorques    === 'function') renderRemorques();
+        if(typeof renderVehiculesLegers === 'function') renderVehiculesLegers();
+        if(typeof renderDashboard    === 'function') renderDashboard();
+        if(typeof updateAlertBanner  === 'function') updateAlertBanner();
+        if(typeof updateNotifBadge   === 'function') updateNotifBadge();
+        if(typeof renderChauffeurs   === 'function') renderChauffeurs();
+      }, 300);
     } else {
       console.log('☁️ Aucune donnée cloud — chargement local');
       _loadAllLocal();
@@ -16975,6 +17608,7 @@ const LS_KEY_VL = 'COREDZ_VEHICULES_LEGERS';
 const LS_KEY_NOTIF = 'COREDZ_NOTIF_LOG';
 
 function _saveAllLocal() {
+  window._inSaveLocal = true;
   try {
     localStorage.setItem(LS_KEY_T,  JSON.stringify(TRACTEURS));
     localStorage.setItem(LS_KEY_R,  JSON.stringify(REMORQUES));
@@ -16983,12 +17617,13 @@ function _saveAllLocal() {
     localStorage.setItem(LS_KEY_C,  JSON.stringify(CHAUFFEURS));
     localStorage.setItem(LS_KEY_VL, JSON.stringify(VEHICULES_LEGERS));
     localStorage.setItem(LS_KEY_NOTIF, JSON.stringify(NOTIF_LOG.slice(0,50)));
-    // Backup planning + commandes localement aussi
+    if(typeof DEMANDES_MAINT !== 'undefined')
+      localStorage.setItem('COREDZ_DM', JSON.stringify(DEMANDES_MAINT));
     if(typeof PLANNING_COMMANDES !== 'undefined' && PLANNING_COMMANDES)
       localStorage.setItem('COREDZ_PLANNING', JSON.stringify(PLANNING_COMMANDES));
     if(typeof DB !== 'undefined' && DB.db)
-      DB.save(); // DB.save() gère son propre localStorage
-  } catch(e) {}
+      localStorage.setItem('CORE_DZ_DATABASE', JSON.stringify(DB.db));
+  } catch(e) {} finally { window._inSaveLocal = false; }
 }
 
 function _loadAllLocal() {
@@ -17000,13 +17635,19 @@ function _loadAllLocal() {
     const c  = localStorage.getItem(LS_KEY_C);
     const vl = localStorage.getItem(LS_KEY_VL);
     const nl = localStorage.getItem(LS_KEY_NOTIF);
+    const dm = localStorage.getItem('COREDZ_DM');
+    const pl = localStorage.getItem('COREDZ_PLANNING');
+    const dbRaw = localStorage.getItem('CORE_DZ_DATABASE');
     if(t)  { const d=JSON.parse(t);  TRACTEURS.length=0;        d.forEach(x=>TRACTEURS.push(x)); }
     if(r)  { const d=JSON.parse(r);  REMORQUES.length=0;        d.forEach(x=>REMORQUES.push(x)); }
     if(h)  { const d=JSON.parse(h);  HISTORIQUE.length=0;       d.forEach(x=>HISTORIQUE.push(x)); }
     if(hr) { const d=JSON.parse(hr); HISTORIQUE_REM.length=0;   d.forEach(x=>HISTORIQUE_REM.push(x)); }
     if(c)  { const d=JSON.parse(c);  CHAUFFEURS.length=0;       d.forEach(x=>CHAUFFEURS.push(x)); }
     if(vl) { const d=JSON.parse(vl); VEHICULES_LEGERS.length=0; d.forEach(x=>VEHICULES_LEGERS.push(x)); }
-    if(nl) { const d=JSON.parse(nl); NOTIF_LOG.length=0;        d.forEach(x=>NOTIF_LOG.push(x)); updateNotifBadge(); }
+    if(nl) { const d=JSON.parse(nl); NOTIF_LOG.length=0;        d.forEach(x=>NOTIF_LOG.push(x)); if(typeof updateNotifBadge==='function') updateNotifBadge(); }
+    if(dm) { const d=JSON.parse(dm); DEMANDES_MAINT.length=0;   d.forEach(x=>DEMANDES_MAINT.push(x)); }
+    if(pl) { try { PLANNING_COMMANDES = JSON.parse(pl); } catch(e){} }
+    if(dbRaw && typeof DB !== 'undefined') { try { const d=JSON.parse(dbRaw); Object.assign(DB.db, d); } catch(e){} }
     if(t||r||c) console.log('✅ Données restaurées depuis localStorage (backup)');
   } catch(e) { console.warn('⚠️ Restauration locale échouée:', e); }
 }
@@ -17069,12 +17710,23 @@ function updateAlertBanner() {
 }
 renderDashboard();
 renderTracteurs();
+renderVehiculesLegers();
 populateVilleSelects();
 updateFilterCounts();
 updateRemFilterCounts();
 startAlertEngine();
 initPortailDocs();
 updateAlertBanner();
+
+// IA status check au démarrage
+(function() {
+  const hasKey = !!(localStorage.getItem('groq_api_key') || window._groqKey);
+  const line = document.getElementById('ia-status-line');
+  if(line && !hasKey) {
+    line.textContent = '⚠️ Clé Groq manquante — cliquer 📡 ADMIN pour configurer';
+    line.style.color = 'var(--orange)';
+  }
+})();
 
 // ============================================================
 // PHASE 2 : GESTION SITUATION PARC PAR STATUTS
@@ -19190,7 +19842,7 @@ function gpsClearChat()     { GPS.clearChat(); }
 function gpsClearAlerts()   { GPS.clearAlerts(); }
 
 // ══════════════════════════════════════════════════════════════
-// CORE-DZ v47 — MOTEUR GPS TEMPS RÉEL
+// CORE-DZ v36 — MOTEUR GPS TEMPS RÉEL
 // Connexion via serveur proxy local Python (port 5000)
 // Si proxy indisponible → simulation avec données réalistes
 // ══════════════════════════════════════════════════════════════
@@ -21211,6 +21863,7 @@ function planningImportExcel(input) {
           + lines.length + ' lignes<br>'
           + '<span style="color:var(--text-dim);">Clique sur 🤖 PLANIFIER ALERTES ROUGES pour générer le plan IA</span>';
       }
+      _saveAll();
       showToast('📥 Planning importé — ' + lines.length + ' lignes');
     } catch(err) {
       showToast('⚠️ Erreur lecture fichier: ' + err.message);
@@ -23519,6 +24172,7 @@ async function planningVisionScanMulti() {
         + disponibles.map(function(c){ return '<div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:5px;padding:3px 7px;font-size:10px;color:var(--text-dim);">💤 '+(c.mat||c.nom)+'</div>'; }).join('')
         + '</div><div style="font-size:10px;color:var(--text-dim);margin-top:6px;">🤖 Robot maintenance évite les camions en course</div>';
     }
+    _saveAll();
     showToast('✅ ' + courses.length + ' en course · ' + disponibles.length + ' libres');
 
     // Reset
@@ -23671,6 +24325,7 @@ async function planningVisionScan(input) {
         + disponibles.map(function(c){ return '<div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:5px;padding:3px 7px;font-size:10px;color:var(--text-dim);">💤 ' + (c.mat||c.nom) + '</div>'; }).join('')
         + '</div><div style="font-size:10px;color:var(--text-dim);margin-top:6px;">🤖 Robot maintenance évite automatiquement les camions en course</div>';
     }
+    _saveAll();
     showToast('✅ ' + courses.length + ' en course · ' + disponibles.length + ' libres');
     // Reset date manuelle
     if (dateEl) dateEl.value = '';
